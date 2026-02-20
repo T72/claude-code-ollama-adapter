@@ -39,53 +39,64 @@ Claude Code / other clients
 
 ## Quick Start
 
-### 1. Install dependencies
+### 1. Clone and enter the repo
 
-```bash
+```cmd
+git clone https://github.com/T72/ollama-openai-proxy.git
+cd ollama-openai-proxy
+```
+
+### 2. Install proxy dependencies
+
+```cmd
 pip install -r requirements.txt
 ```
 
-### 2. Start the proxy
+> **Note (Windows):** Skip the `source .venv/bin/activate` line — it's Linux-only.
+> A venv is optional here since all three dependencies (`fastapi`, `uvicorn`, `httpx`)
+> are likely already in your global Python environment.
 
-```bash
+### 3. Install LiteLLM (if not already installed)
+
+```cmd
+pip install "litellm[proxy]"
+```
+
+### 4. Start the proxy (Terminal 1 — keep it open)
+
+```cmd
 uvicorn proxy:app --host 0.0.0.0 --port 4000
 ```
 
-The proxy now listens on `http://localhost:4000` and forwards requests to Ollama at `http://localhost:11434` by default.
-
-### 3. Configure LiteLLM
-
-Use the provided `litellm_config.yaml`:
-
-```yaml
-- model_name: glm-5:cloud
-  litellm_params:
-    model: openai/glm-5:cloud
-    api_base: http://localhost:4000/v1   # <-- proxy, not Ollama directly
-    api_key: "dummy-key-not-checked-by-proxy"
+Expected output:
+```
+INFO:     Started server process [xxxxx]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:4000 (Press CTRL+C to quit)
 ```
 
-Then start LiteLLM:
+### 5. Start LiteLLM (Terminal 2 — keep it open)
 
-```bash
+```cmd
 litellm --config litellm_config.yaml --port 4001
 ```
 
-### 4. Test it
+### 6. Test
 
-```bash
-# Health check
+```cmd
 curl http://localhost:4000/health
-
-# Chat completion with GLM-5:cloud (think mode auto-enabled)
-curl -X POST http://localhost:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "glm-5:cloud",
-    "messages": [{"role": "user", "content": "What is 17 * 23? Think step by step."}],
-    "stream": false
-  }'
 ```
+
+```cmd
+curl -X POST http://localhost:4000/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\": \"glm-5:cloud\", \"messages\": [{\"role\": \"user\", \"content\": \"What is 17 times 23?\"}], \"stream\": false}"
+```
+
+> **PowerShell alternative** (avoids escaping issues):
+> ```powershell
+> $body = @{ model = 'glm-5:cloud'; messages = @(@{ role = 'user'; content = 'What is 17 times 23?' }); stream = $false } | ConvertTo-Json -Depth 3
+> Invoke-RestMethod -Uri http://localhost:4000/v1/chat/completions -Method POST -ContentType 'application/json' -Body $body
+> ```
 
 ---
 
@@ -100,10 +111,11 @@ curl -X POST http://localhost:4000/v1/chat/completions \
 - `glm-5:cloud`
 - `glm4:thinking`
 
-Example — add a custom model:
+Example — add a custom model (Windows CMD):
 
-```bash
-THINK_MODELS="my-reasoning-model:latest" uvicorn proxy:app --port 4000
+```cmd
+set THINK_MODELS=my-reasoning-model:latest
+uvicorn proxy:app --port 4000
 ```
 
 ---
@@ -140,6 +152,32 @@ THINK_MODELS="my-reasoning-model:latest" uvicorn proxy:app --port 4000
 
 ---
 
+## Known Issues & Fixes
+
+### FastAPI startup error on Python 3.13
+
+Fixed in commit `a8d5987`. The original code used `JSONResponse | StreamingResponse`
+as a return type annotation, which FastAPI tries to parse as a Pydantic response model.
+Fix: `response_model=None` added to the `@app.post` decorator, return type changed to
+the base `Response` class.
+
+### `source` command not found on Windows
+
+`source .venv/bin/activate` is Linux/macOS only. On Windows CMD use:
+```cmd
+.venv\Scripts\activate
+```
+Or skip the venv entirely if the global environment already has the dependencies.
+
+### `litellm` command not found
+
+LiteLLM is a separate install from the proxy itself:
+```cmd
+pip install "litellm[proxy]"
+```
+
+---
+
 ## Why not just use Ollama's `/v1` path?
 
 Ollama's `/v1/chat/completions` compatibility layer does not currently expose the `think` parameter or the `thinking` response field. To access GLM-5:cloud's reasoning output you must use `/api/chat` directly — which this proxy enables within a standard OpenAI/LiteLLM workflow.
@@ -161,9 +199,9 @@ ollama-openai-proxy/
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.11+ (tested on 3.13)
 - Ollama running locally (or accessible via network)
-- LiteLLM (optional, only needed if you want the full Claude Code integration)
+- LiteLLM — `pip install "litellm[proxy]"` (optional, only needed for full Claude Code integration)
 
 ---
 
