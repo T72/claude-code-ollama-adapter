@@ -229,7 +229,8 @@ async def chat_completions(request: Request) -> Response:
 
 
 async def _stream_ollama(
-feat: add /v1/responses endpoint alias to support Anthropic messages passthrough in Claude Code) -> AsyncIterator[str]:
+    url: str, ollama_body: dict, model: str
+) -> AsyncIterator[str]:
     """Yield OpenAI SSE chunks from a streaming Ollama response."""
     cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     async with httpx.AsyncClient(timeout=120) as client:
