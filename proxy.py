@@ -5,15 +5,17 @@ Translates incoming OpenAI-style requests to Ollama's native /api/chat format,
 then maps Ollama's response back to OpenAI format.
 Supports:
  - Non-streaming and streaming (SSE) responses
- - GLM-5:cloud think / reasoning_content fields
+ - GLM-5:cloud think / reasoning_content fields (opt-in via THINK_MODELS env)
  - Configurable Ollama base URL and per-model think flag
  - OpenAI Responses API endpoint alias (/v1/responses)
  - Anthropic-format content blocks flattened to plain text
+ - Strips markdown code fences from JSON-only responses
 Usage:
  uvicorn proxy:app --host 0.0.0.0 --port 4000
 '''
 import json
 import os
+import re
 import time
 import uuid
 from typing import AsyncIterator, Optional
@@ -26,7 +28,10 @@ OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
 # SSE requires each event to end with two newlines.
 _SSE_SEP = chr(10) + chr(10)
 
-_DEFAULT_THINK_MODELS = {'glm-5:cloud', 'glm4:thinking'}
+# Think models: opt-in only via THINK_MODELS env var (e.g. THINK_MODELS=glm-5:cloud)
+# Disabled by default so that LiteLLM/Claude Code streaming is not broken by
+# reasoning_content blocks which the Anthropic SSE translation cannot handle.
+_DEFAULT_THINK_MODELS: set[str] = set()
 THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
   m.strip()
   for m in os.getenv('THINK_MODELS', '').split(',')
@@ -42,16 +47,34 @@ _ANTHROPIC_DROP_PARAMS = {
   'betas',
 }
 
+# Regex to strip markdown code fences (```json ... ``` or ``` ... ```).
+_CODE_FENCE_RE = re.compile(
+  r'^```(?:json)?\s*\n?(.+?)\n?```\s*$',
+  re.DOTALL | re.IGNORECASE,
+)
+
 app = FastAPI(
   title='Ollama OpenAI Proxy',
   description='OpenAI-compatible proxy for Ollama /api/chat',
-  version='0.1.9',
+  version='0.2.0',
 )
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
   if request_think is not None:
     return request_think
   return model in THINK_MODELS
+
+def _strip_code_fence(text: str) -> str:
+  """Remove markdown code fences if the inner content is valid JSON."""
+  m = _CODE_FENCE_RE.match(text.strip())
+  if m:
+    inner = m.group(1).strip()
+    try:
+      json.loads(inner)
+      return inner
+    except json.JSONDecodeError:
+      pass
+  return text
 
 def _normalize_messages(messages: list) -> list:
   """Flatten Anthropic-style content block lists to plain strings.
@@ -105,7 +128,7 @@ def _openai_to_ollama(body: dict) -> dict:
 
 def _ollama_to_openai(ollama_resp: dict, model: str) -> dict:
   msg = ollama_resp.get('message', {})
-  content: str = msg.get('content', '')
+  content: str = _strip_code_fence(msg.get('content', ''))
   thinking: Optional[str] = msg.get('thinking')
 
   finish_reason = 'stop'
@@ -144,7 +167,9 @@ def _ollama_chunk_to_openai_sse(chunk: dict, model: str, cid: str) -> str:
     delta['role'] = msg['role']
   if 'content' in msg:
     delta['content'] = msg['content']
-  if 'thinking' in msg:
+  # Only include reasoning_content if thinking is enabled for this model.
+  # When going through LiteLLM/Anthropic path, omit it to prevent stream hang.
+  if 'thinking' in msg and msg.get('thinking'):
     delta['reasoning_content'] = msg['thinking']
 
   finish_reason = None
