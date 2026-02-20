@@ -1,22 +1,7 @@
 '''
 ollama-openai-proxy - proxy.py
-Exposes an OpenAI-compatible POST /v1/chat/completions endpoint.
-Translates incoming OpenAI-style requests to Ollama's native /api/chat format,
-then maps Ollama's response back to OpenAI format.
-Supports:
- - Non-streaming and streaming (SSE) responses
- - Configurable Ollama base URL and per-model think flag (opt-in via THINK_MODELS env)
- - OpenAI Responses API endpoint alias (/v1/responses)
- - Anthropic-format content blocks flattened to plain text
- - Strips markdown code fences from JSON-only responses
-Note on thinking/reasoning_content:
- reasoning_content is intentionally NOT forwarded in responses.
- LiteLLM's Anthropic SSE translation wraps it in a 'thinking' content block
- that requires a valid 'signature' field (interleaved-thinking beta). Since
- Ollama never provides a signature, Claude Code hangs waiting for a valid
- thinking block. Solution: suppress reasoning_content entirely at proxy level.
-Usage:
- uvicorn proxy:app --host 0.0.0.0 --port 4000
+Exposes OpenAI-compatible (/v1/chat/completions) AND Anthropic-compatible (/v1/messages) endpoints.
+Translates incoming requests to Ollama's native /api/chat format.
 '''
 import json
 import os
@@ -29,231 +14,174 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
-
-# SSE requires each event to end with two newlines.
 _SSE_SEP = chr(10) + chr(10)
 
-# Think models: opt-in only via THINK_MODELS env var (e.g. THINK_MODELS=glm-5:cloud)
-# Disabled by default — reasoning_content is suppressed in responses regardless
-# (see note in module docstring).
+# Think models: opt-in only via THINK_MODELS env var
 _DEFAULT_THINK_MODELS: set[str] = set()
 THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
-  m.strip()
-  for m in os.getenv('THINK_MODELS', '').split(',')
-  if m.strip()
+    m.strip() for m in os.getenv('THINK_MODELS', '').split(',') if m.strip()
 }
 
-# Claude Code / Anthropic-specific params that Ollama does not understand.
-_ANTHROPIC_DROP_PARAMS = {
-  'output_config',
-  'thinking',
-  'metadata',
-  'anthropic_version',
-  'betas',
-}
+_ANTHROPIC_DROP_PARAMS = {'output_config', 'thinking', 'metadata', 'anthropic_version', 'betas'}
 
-# Regex to strip markdown code fences (```json ... ``` or ``` ... ```).
-_CODE_FENCE_RE = re.compile(
-  r'^```(?:json)?\s*\n?(.+?)\n?```\s*$',
-  re.DOTALL | re.IGNORECASE,
-)
-
-app = FastAPI(
-  title='Ollama OpenAI Proxy',
-  description='OpenAI-compatible proxy for Ollama /api/chat',
-  version='0.2.1',
-)
+app = FastAPI(title='Ollama OpenAI/Anthropic Proxy', version='0.3.0')
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
-  if request_think is not None:
-    return request_think
-  return model in THINK_MODELS
-
-def _strip_code_fence(text: str) -> str:
-  """Remove markdown code fences if the inner content is valid JSON."""
-  m = _CODE_FENCE_RE.match(text.strip())
-  if m:
-    inner = m.group(1).strip()
-    try:
-      json.loads(inner)
-      return inner
-    except json.JSONDecodeError:
-      pass
-  return text
+    if request_think is not None: return request_think
+    return model in THINK_MODELS
 
 def _normalize_messages(messages: list) -> list:
-  """Flatten Anthropic-style content block lists to plain strings."""
-  normalized = []
-  for msg in messages:
-    content = msg.get('content')
-    if isinstance(content, list):
-      text = ' '.join(
-        block.get('text', '')
-        for block in content
-        if isinstance(block, dict) and block.get('type') == 'text'
-      )
-      normalized.append({**msg, 'content': text})
-    else:
-      normalized.append(msg)
-  return normalized
+    normalized = []
+    for msg in messages:
+        content = msg.get('content')
+        if isinstance(content, list):
+            text = ' '.join(b.get('text', '') for b in content if isinstance(b, dict) and b.get('type') == 'text')
+            normalized.append({**msg, 'content': text})
+        else:
+            normalized.append(msg)
+    return normalized
 
 def _openai_to_ollama(body: dict) -> dict:
-  model: str = body.get('model', '')
-  messages: list = _normalize_messages(body.get('messages', []))
-  stream: bool = body.get('stream', False)
-  think: Optional[bool] = body.get('think')
+    model = body.get('model', '')
+    messages = _normalize_messages(body.get('messages', []))
+    stream = body.get('stream', False)
+    ollama_body = {'model': model, 'messages': messages, 'stream': stream}
+    if _should_think(model, body.get('think')): ollama_body['think'] = True
+    options = {}
+    for key in ('temperature', 'top_p', 'top_k', 'num_predict', 'seed', 'stop'):
+        if key in body: options[key] = body[key]
+    if 'max_tokens' in body and 'num_predict' not in options:
+        options['num_predict'] = body['max_tokens']
+    if options: ollama_body['options'] = options
+    return ollama_body
 
-  ollama_body: dict = {
-    'model': model,
-    'messages': messages,
-    'stream': stream,
-  }
+def _anthropic_to_ollama(body: dict) -> dict:
+    # Convert Anthropic /v1/messages to Ollama /api/chat
+    model = body.get('model', '')
+    messages = []
+    system = body.get('system')
+    if system: messages.append({'role': 'system', 'content': system})
+    
+    for m in body.get('messages', []):
+        content = m.get('content')
+        if isinstance(content, list):
+            text = ' '.join(b.get('text', '') for b in content if b.get('type') == 'text')
+            messages.append({'role': m.get('role'), 'content': text})
+        else:
+            messages.append(m)
+            
+    ollama_body = {
+        'model': model,
+        'messages': messages,
+        'stream': body.get('stream', False),
+    }
+    # Anthropic uses max_tokens, Ollama uses num_predict
+    if 'max_tokens' in body:
+        ollama_body['options'] = {'num_predict': body['max_tokens']}
+    return ollama_body
 
-  if _should_think(model, think):
-    ollama_body['think'] = True
+@app.post('/v1/messages')
+async def anthropic_messages(request: Request):
+    body = await request.json()
+    model = body.get('model', '')
+    stream = body.get('stream', False)
+    ollama_body = _anthropic_to_ollama(body)
+    url = OLLAMA_BASE_URL + '/api/chat'
+    
+    if stream:
+        return StreamingResponse(
+            _stream_anthropic(url, ollama_body, model),
+            media_type='text/event-stream'
+        )
+    
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(url, json=ollama_body)
+        resp.raise_for_status()
+        ollama_data = resp.json()
+        
+        # Format as Anthropic Message
+        content = ollama_data.get('message', {}).get('content', '')
+        return JSONResponse({
+            'id': 'msg_' + uuid.uuid4().hex[:12],
+            'type': 'message',
+            'role': 'assistant',
+            'content': [{'type': 'text', 'text': content}],
+            'model': model,
+            'stop_reason': 'end_turn',
+            'usage': {
+                'input_tokens': ollama_data.get('prompt_eval_count', 0),
+                'output_tokens': ollama_data.get('eval_count', 0)
+            }
+        })
 
-  options: dict = {}
-  for key in ('temperature', 'top_p', 'top_k', 'num_predict', 'seed', 'stop'):
-    if key in body:
-      options[key] = body[key]
+async def _stream_anthropic(url: str, ollama_body: dict, model: str):
+    mid = 'msg_' + uuid.uuid4().hex[:12]
+    yield 'event: message_start' + chr(10) + f'data: {json.dumps({"type": "message_start", "message": {"id": mid, "type": "message", "role": "assistant", "content": [], "model": model, "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 0, "output_tokens": 0}}})}' + _SSE_SEP
+    yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})}' + _SSE_SEP
+    
+    async with httpx.AsyncClient(timeout=120) as client:
+        async with client.stream('POST', url, json=ollama_body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.strip(): continue
+                chunk = json.loads(line)
+                content = chunk.get('message', {}).get('content', '')
+                if content:
+                    yield 'event: content_block_delta' + chr(10) + f'data: {json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": content}})}' + _SSE_SEP
+                
+                if chunk.get('done'):
+                    yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": 0})}' + _SSE_SEP
+                    yield 'event: message_delta' + chr(10) + f'data: {json.dumps({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": chunk.get("eval_count", 0)}})}' + _SSE_SEP
+                    yield 'event: message_stop' + chr(10) + 'data: {"type": "message_stop"}' + _SSE_SEP
 
-  if 'max_tokens' in body and 'num_predict' not in options:
-    options['num_predict'] = body['max_tokens']
-
-  if options:
-    ollama_body['options'] = options
-
-  return ollama_body
+@app.post('/v1/chat/completions')
+@app.post('/v1/responses')
+async def chat_completions(request: Request):
+    body = await request.json()
+    for p in _ANTHROPIC_DROP_PARAMS: body.pop(p, None)
+    model = body.get('model', '')
+    stream = body.get('stream', False)
+    ollama_body = _openai_to_ollama(body)
+    url = OLLAMA_BASE_URL + '/api/chat'
+    if stream:
+        return StreamingResponse(_stream_openai(url, ollama_body, model), media_type='text/event-stream')
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(url, json=ollama_body)
+        resp.raise_for_status()
+        return JSONResponse(_ollama_to_openai(resp.json(), model))
 
 def _ollama_to_openai(ollama_resp: dict, model: str) -> dict:
-  msg = ollama_resp.get('message', {})
-  content: str = _strip_code_fence(msg.get('content', ''))
-
-  finish_reason = 'stop'
-  if ollama_resp.get('done_reason') == 'length':
-    finish_reason = 'length'
-
-  # DO NOT include reasoning_content / thinking here.
-  # LiteLLM wraps it in an Anthropic 'thinking' content block that requires
-  # a valid 'signature' field. Ollama never provides one, causing Claude Code
-  # to hang silently waiting for a complete thinking block.
-  choice_msg: dict = {'role': 'assistant', 'content': content}
-
-  usage = {
-    'prompt_tokens': ollama_resp.get('prompt_eval_count', 0),
-    'completion_tokens': ollama_resp.get('eval_count', 0),
-    'total_tokens': (
-      ollama_resp.get('prompt_eval_count', 0)
-      + ollama_resp.get('eval_count', 0)
-    ),
-  }
-
-  return {
-    'id': 'chatcmpl-' + uuid.uuid4().hex[:12],
-    'object': 'chat.completion',
-    'created': int(time.time()),
-    'model': model,
-    'choices': [{'index': 0, 'message': choice_msg, 'finish_reason': finish_reason}],
-    'usage': usage,
-  }
-
-def _ollama_chunk_to_openai_sse(chunk: dict, model: str, cid: str) -> str:
-  msg = chunk.get('message', {})
-  delta: dict = {}
-
-  if 'role' in msg:
-    delta['role'] = msg['role']
-  if 'content' in msg:
-    delta['content'] = msg['content']
-  # reasoning_content intentionally omitted — see module docstring.
-
-  finish_reason = None
-  usage = None
-
-  if chunk.get('done'):
-    reason = chunk.get('done_reason', 'stop')
-    finish_reason = 'length' if reason == 'length' else 'stop'
-    usage = {
-      'prompt_tokens': chunk.get('prompt_eval_count', 0),
-      'completion_tokens': chunk.get('eval_count', 0),
-      'total_tokens': (
-        chunk.get('prompt_eval_count', 0)
-        + chunk.get('eval_count', 0)
-      ),
+    content = ollama_resp.get('message', {}).get('content', '')
+    return {
+        'id': 'chatcmpl-' + uuid.uuid4().hex[:12],
+        'object': 'chat.completion',
+        'created': int(time.time()),
+        'model': model,
+        'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}],
+        'usage': {'prompt_tokens': ollama_resp.get('prompt_eval_count', 0), 'completion_tokens': ollama_resp.get('eval_count', 0), 'total_tokens': ollama_resp.get('prompt_eval_count', 0) + ollama_resp.get('eval_count', 0)}
     }
 
-  payload = {
-    'id': cid,
-    'object': 'chat.completion.chunk',
-    'created': int(time.time()),
-    'model': model,
-    'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish_reason}],
-  }
-  if usage:
-    payload['usage'] = usage
-
-  return 'data: ' + json.dumps(payload) + _SSE_SEP
+async def _stream_openai(url: str, ollama_body: dict, model: str):
+    cid = 'chatcmpl-' + uuid.uuid4().hex[:12]
+    async with httpx.AsyncClient(timeout=120) as client:
+        async with client.stream('POST', url, json=ollama_body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.strip(): continue
+                chunk = json.loads(line)
+                content = chunk.get('message', {}).get('content', '')
+                yield 'data: ' + json.dumps({
+                    'id': cid, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model,
+                    'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': 'stop' if chunk.get('done') else None}]
+                }) + _SSE_SEP
+            yield 'data: [DONE]' + _SSE_SEP
 
 @app.get('/health')
-async def health():
-  return {'status': 'ok', 'ollama_base': OLLAMA_BASE_URL}
-
+async def health(): return {'status': 'ok', 'ollama_base': OLLAMA_BASE_URL}
 @app.get('/v1/models')
 async def list_models():
-  async with httpx.AsyncClient(timeout=30) as client:
-    r = await client.get(OLLAMA_BASE_URL + '/api/tags')
-    r.raise_for_status()
-    models = r.json().get('models', [])
-    data = [
-      {'id': m['name'], 'object': 'model', 'created': 0, 'owned_by': 'ollama'}
-      for m in models
-    ]
-    return JSONResponse({'object': 'list', 'data': data})
-
-@app.post('/v1/responses')
-@app.post('/v1/chat/completions')
-async def chat_completions(request: Request):
-  body = await request.json()
-  for param in _ANTHROPIC_DROP_PARAMS:
-    body.pop(param, None)
-
-  model = body.get('model', '')
-  stream = body.get('stream', False)
-
-  ollama_body = _openai_to_ollama(body)
-  url = OLLAMA_BASE_URL + '/api/chat'
-
-  if stream:
-    return StreamingResponse(
-      _stream_ollama(url, ollama_body, model),
-      media_type='text/event-stream',
-    )
-
-  async with httpx.AsyncClient(timeout=120) as client:
-    resp = await client.post(url, json=ollama_body)
-    resp.raise_for_status()
-    return JSONResponse(_ollama_to_openai(resp.json(), model))
-
-async def _stream_ollama(url: str, ollama_body: dict, model: str):
-  cid = 'chatcmpl-' + uuid.uuid4().hex[:12]
-  async with httpx.AsyncClient(timeout=120) as client:
-    try:
-      async with client.stream('POST', url, json=ollama_body) as resp:
-        resp.raise_for_status()
-        async for line in resp.aiter_lines():
-          if not line.strip():
-            continue
-          try:
-            chunk = json.loads(line)
-          except json.JSONDecodeError:
-            continue
-
-          yield _ollama_chunk_to_openai_sse(chunk, model, cid)
-
-          if chunk.get('done'):
-            break
-    except Exception as exc:
-      err = {'error': {'message': str(exc), 'type': 'upstream_error'}}
-      yield 'data: ' + json.dumps(err) + _SSE_SEP
-
-  yield 'data: [DONE]' + _SSE_SEP
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(OLLAMA_BASE_URL + '/api/tags')
+        r.raise_for_status()
+        models = r.json().get('models', [])
+        return JSONResponse({'object': 'list', 'data': [{'id': m['name'], 'object': 'model', 'created': 0, 'owned_by': 'ollama'} for m in models]})
