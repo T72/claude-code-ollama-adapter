@@ -22,4 +22,5 @@ jobs:
           pip install pytest httpx fastapi[testclient]
       - name: Run tests
         run: |
+          export PYTHONPATH=$PYTHONPATH:.
           pytest tests/
