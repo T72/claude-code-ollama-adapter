@@ -1,7 +1,7 @@
 '''
 ollama-openai-proxy - proxy.py
 Exposes OpenAI-compatible (/v1/chat/completions) AND Anthropic-compatible (/v1/messages) endpoints.
-Translates incoming requests to Ollama's native /api/chat format.
+Translates incoming requests to Ollama's native /api/chat format, including streaming and tools.
 '''
 
 import json
@@ -9,7 +9,7 @@ import os
 import re
 import time
 import uuid
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, List, Dict, Any
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -25,7 +25,7 @@ THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
 
 _ANTHROPIC_DROP_PARAMS = {'output_config', 'thinking', 'metadata', 'anthropic_version', 'betas'}
 
-app = FastAPI(title='Ollama OpenAI/Anthropic Proxy', version='0.3.3')
+app = FastAPI(title='Ollama OpenAI/Anthropic Proxy', version='0.4.0')
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
     if request_think is not None: return request_think
@@ -46,8 +46,16 @@ def _openai_to_ollama(body: dict) -> dict:
     model = body.get('model', '')
     messages = _normalize_messages(body.get('messages', []))
     stream = body.get('stream', False)
+    
     ollama_body = {'model': model, 'messages': messages, 'stream': stream}
-    if _should_think(model, body.get('think')): ollama_body['think'] = True
+    
+    if _should_think(model, body.get('think')): 
+        ollama_body['think'] = True
+    
+    # Tool support
+    if 'tools' in body:
+        ollama_body['tools'] = body['tools']
+    
     options = {}
     for key in ('temperature', 'top_p', 'top_k', 'num_predict', 'seed', 'stop'):
         if key in body: options[key] = body[key]
@@ -59,6 +67,8 @@ def _openai_to_ollama(body: dict) -> dict:
 def _anthropic_to_ollama(body: dict) -> dict:
     model = body.get('model', '')
     messages = []
+    
+    # Handle system message
     system = body.get('system')
     if isinstance(system, list):
         system_text = ' '.join(b.get('text', '') for b in system if b.get('type') == 'text')
@@ -68,13 +78,41 @@ def _anthropic_to_ollama(body: dict) -> dict:
 
     for m in body.get('messages', []):
         content = m.get('content')
+        role = m.get('role')
         if isinstance(content, list):
-            text = ' '.join(b.get('text', '') for b in content if b.get('type') == 'text')
-            messages.append({'role': m.get('role'), 'content': text})
+            # Handle mixed content (text and tool results)
+            parts = []
+            for b in content:
+                if b.get('type') == 'text':
+                    parts.append(b.get('text', ''))
+                elif b.get('type') == 'tool_result':
+                    # Anthropic tool result -> Ollama tool message
+                    messages.append({
+                        'role': 'tool',
+                        'content': str(b.get('content', '')),
+                        'tool_call_id': b.get('tool_use_id')
+                    })
+            if parts:
+                messages.append({'role': role, 'content': ' '.join(parts)})
         else:
             messages.append(m)
 
     ollama_body = {'model': model, 'messages': messages, 'stream': body.get('stream', False)}
+    
+    # Anthropic tools -> Ollama tools
+    if 'tools' in body:
+        ollama_tools = []
+        for t in body['tools']:
+            ollama_tools.append({
+                'type': 'function',
+                'function': {
+                    'name': t.get('name'),
+                    'description': t.get('description', ''),
+                    'parameters': t.get('input_schema', {})
+                }
+            })
+        ollama_body['tools'] = ollama_tools
+
     if 'max_tokens' in body:
         ollama_body['options'] = {'num_predict': body['max_tokens']}
     return ollama_body
@@ -94,34 +132,83 @@ async def anthropic_messages(request: Request):
         resp = await client.post(url, json=ollama_body)
         if resp.status_code != 200:
             return Response(content=resp.text, status_code=resp.status_code)
+        
         ollama_data = resp.json()
-        content = ollama_data.get('message', {}).get('content', '')
+        ollama_msg = ollama_data.get('message', {})
+        content_blocks = []
+        
+        # Text content
+        if ollama_msg.get('content'):
+            content_blocks.append({'type': 'text', 'text': ollama_msg['content']})
+            
+        # Tool calls
+        stop_reason = 'end_turn'
+        if ollama_msg.get('tool_calls'):
+            stop_reason = 'tool_use'
+            for tc in ollama_msg['tool_calls']:
+                fn = tc.get('function', {})
+                content_blocks.append({
+                    'type': 'tool_use',
+                    'id': 'toolu_' + uuid.uuid4().hex[:12],
+                    'name': fn.get('name'),
+                    'input': fn.get('arguments', {})
+                })
+        
         return JSONResponse({
-            'id': 'msg_' + uuid.uuid4().hex[:12], 'type': 'message', 'role': 'assistant',
-            'content': [{'type': 'text', 'text': content}], 'model': model, 'stop_reason': 'end_turn',
-            'usage': {'input_tokens': ollama_data.get('prompt_eval_count', 0), 'output_tokens': ollama_data.get('eval_count', 0)}
+            'id': 'msg_' + uuid.uuid4().hex[:12],
+            'type': 'message',
+            'role': 'assistant',
+            'content': content_blocks,
+            'model': model,
+            'stop_reason': stop_reason,
+            'usage': {
+                'input_tokens': ollama_data.get('prompt_eval_count', 0),
+                'output_tokens': ollama_data.get('eval_count', 0)
+            }
         })
 
 async def _stream_anthropic(url: str, ollama_body: dict, model: str):
     mid = 'msg_' + uuid.uuid4().hex[:12]
-    # Anthropic initial events
     yield 'event: message_start' + chr(10) + f'data: {json.dumps({"type": "message_start", "message": {"id": mid, "type": "message", "role": "assistant", "content": [], "model": model, "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 0, "output_tokens": 0}}})}' + _SSE_SEP
-    yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})}' + _SSE_SEP
-
+    
     async with httpx.AsyncClient(timeout=120) as client:
         async with client.stream('POST', url, json=ollama_body) as resp:
             if resp.status_code != 200:
                 yield f'data: {json.dumps({"type": "error", "error": {"type": "upstream_error", "message": (await resp.aread()).decode()}})}' + _SSE_SEP
                 return
+            
+            content_started = False
             async for line in resp.aiter_lines():
                 if not line.strip(): continue
                 chunk = json.loads(line)
-                content = chunk.get('message', {}).get('content', '')
+                msg = chunk.get('message', {})
+                
+                # Handle text
+                content = msg.get('content', '')
                 if content:
+                    if not content_started:
+                        yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})}' + _SSE_SEP
+                        content_started = True
                     yield 'event: content_block_delta' + chr(10) + f'data: {json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": content}})}' + _SSE_SEP
+                
+                # Note: Ollama streaming currently doesn't provide partial tool calls nicely.
+                # If tool_calls exist in a chunk, it's usually the final one.
+                if msg.get('tool_calls'):
+                    if content_started:
+                        yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": 0})}' + _SSE_SEP
+                        content_started = False
+                    
+                    for i, tc in enumerate(msg['tool_calls']):
+                        fn = tc.get('function', {})
+                        yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": i+1, "content_block": {"type": "tool_use", "id": tc.get("id", "toolu_"+uuid.uuid4().hex[:12]), "name": fn.get("name"), "input": fn.get("arguments", {})}})}' + _SSE_SEP
+                        yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": i+1})}' + _SSE_SEP
+
                 if chunk.get('done'):
-                    yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": 0})}' + _SSE_SEP
-                    yield 'event: message_delta' + chr(10) + f'data: {json.dumps({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": chunk.get("eval_count", 0)}})}' + _SSE_SEP
+                    if content_started:
+                        yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": 0})}' + _SSE_SEP
+                    
+                    stop_reason = 'tool_use' if msg.get('tool_calls') or chunk.get('done_reason') == 'tool_calls' else 'end_turn'
+                    yield 'event: message_delta' + chr(10) + f'data: {json.dumps({"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None}, "usage": {"output_tokens": chunk.get("eval_count", 0)}})}' + _SSE_SEP
                     yield 'event: message_stop' + chr(10) + 'data: {"type": "message_stop"}' + _SSE_SEP
 
 @app.post('/v1/chat/completions')
@@ -143,7 +230,15 @@ async def chat_completions(request: Request):
         return JSONResponse(_ollama_to_openai(resp.json(), model))
 
 def _ollama_to_openai(ollama_resp: dict, model: str) -> dict:
-    content = ollama_resp.get('message', {}).get('content', '')
+    msg = ollama_resp.get('message', {})
+    openai_msg = {'role': 'assistant', 'content': msg.get('content', '')}
+    
+    if msg.get('tool_calls'):
+        openai_msg['tool_calls'] = msg['tool_calls']
+        finish_reason = 'tool_calls'
+    else:
+        finish_reason = 'stop'
+
     return {
         'id': 'chatcmpl-' + uuid.uuid4().hex[:12],
         'object': 'chat.completion',
@@ -151,8 +246,8 @@ def _ollama_to_openai(ollama_resp: dict, model: str) -> dict:
         'model': model,
         'choices': [{
             'index': 0,
-            'message': {'role': 'assistant', 'content': content},
-            'finish_reason': 'stop'
+            'message': openai_msg,
+            'finish_reason': finish_reason
         }],
         'usage': {
             'prompt_tokens': ollama_resp.get('prompt_eval_count', 0),
@@ -163,7 +258,6 @@ def _ollama_to_openai(ollama_resp: dict, model: str) -> dict:
 
 async def _stream_openai(url: str, ollama_body: dict, model: str):
     cid = 'chatcmpl-' + uuid.uuid4().hex[:12]
-    # OpenAI compliant initial role chunk
     yield 'data: ' + json.dumps({
         'id': cid, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model,
         'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]
@@ -175,17 +269,25 @@ async def _stream_openai(url: str, ollama_body: dict, model: str):
             async for line in resp.aiter_lines():
                 if not line.strip(): continue
                 chunk = json.loads(line)
-                content = chunk.get('message', {}).get('content', '')
-                if content:
+                msg = chunk.get('message', {})
+                
+                delta = {}
+                if msg.get('content'):
+                    delta['content'] = msg['content']
+                if msg.get('tool_calls'):
+                    delta['tool_calls'] = msg['tool_calls']
+                
+                if delta:
                     yield 'data: ' + json.dumps({
                         'id': cid, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model,
-                        'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]
+                        'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]
                     }) + _SSE_SEP
+                
                 if chunk.get('done'):
-                    # Final compliance chunk with usage and stop reason
+                    finish_reason = 'tool_calls' if msg.get('tool_calls') or chunk.get('done_reason') == 'tool_calls' else 'stop'
                     yield 'data: ' + json.dumps({
                         'id': cid, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model,
-                        'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}],
+                        'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}],
                         'usage': {
                             'prompt_tokens': chunk.get('prompt_eval_count', 0),
                             'completion_tokens': chunk.get('eval_count', 0),
