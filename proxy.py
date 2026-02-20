@@ -9,6 +9,7 @@ Supports:
   - Non-streaming and streaming (SSE) responses
   - GLM-5:cloud  think / reasoning_content  fields
   - Configurable Ollama base URL and per-model think flag
+  - OpenAI Responses API endpoint alias (/v1/responses)
 
 Usage:
     uvicorn proxy:app --host 0.0.0.0 --port 4000
@@ -41,7 +42,7 @@ THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
 app = FastAPI(
     title="Ollama OpenAI Proxy",
     description="OpenAI-compatible proxy for Ollama /api/chat",
-    version="0.1.0",
+    version="0.1.1",
 )
 
 
@@ -149,7 +150,9 @@ def _ollama_chunk_to_openai_sse(chunk: dict, model: str, cid: str) -> str:
         "model": model,
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
     }
-    return f"data: {json.dumps(payload)}\n\n"
+    return f"data: {json.dumps(payload)}
+
+"
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +188,13 @@ async def list_models() -> JSONResponse:
     return JSONResponse({"object": "list", "data": data})
 
 
+@app.post("/v1/responses", response_model=None)
 @app.post("/v1/chat/completions", response_model=None)
 async def chat_completions(request: Request) -> Response:
-    """Main proxy endpoint: OpenAI -> Ollama /api/chat -> OpenAI."""
+    """
+    Main proxy endpoint: OpenAI -> Ollama /api/chat -> OpenAI.
+    Supports both standard /v1/chat/completions and the /v1/responses alias.
+    """
     try:
         body = await request.json()
     except Exception as exc:
@@ -222,8 +229,7 @@ async def chat_completions(request: Request) -> Response:
 
 
 async def _stream_ollama(
-    url: str, ollama_body: dict, model: str
-) -> AsyncIterator[str]:
+feat: add /v1/responses endpoint alias to support Anthropic messages passthrough in Claude Code) -> AsyncIterator[str]:
     """Yield OpenAI SSE chunks from a streaming Ollama response."""
     cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     async with httpx.AsyncClient(timeout=120) as client:
@@ -248,5 +254,9 @@ async def _stream_ollama(
                     "code": exc.response.status_code,
                 }
             }
-            yield f"data: {json.dumps(error_payload)}\n\n"
-    yield "data: [DONE]\n\n"
+            yield f"data: {json.dumps(error_payload)}
+
+"
+    yield "data: [DONE]
+
+"
