@@ -22,7 +22,7 @@ from typing import AsyncIterator, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 # ---------------------------------------------------------------------------
 # Configuration (override via environment variables)
@@ -185,8 +185,8 @@ async def list_models() -> JSONResponse:
     return JSONResponse({"object": "list", "data": data})
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
+@app.post("/v1/chat/completions", response_model=None)
+async def chat_completions(request: Request) -> Response:
     """Main proxy endpoint: OpenAI -> Ollama /api/chat -> OpenAI."""
     try:
         body = await request.json()
