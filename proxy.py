@@ -24,7 +24,7 @@ THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
 
 _ANTHROPIC_DROP_PARAMS = {'output_config', 'thinking', 'metadata', 'anthropic_version', 'betas'}
 
-app = FastAPI(title='Ollama OpenAI/Anthropic Proxy', version='0.4.1')
+app = FastAPI(title='Ollama OpenAI/Anthropic Proxy', version='0.4.3')
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
     if request_think is not None: return request_think
@@ -146,14 +146,15 @@ async def anthropic_messages(request: Request):
             for tc in ollama_msg['tool_calls']:
                 fn = tc.get('function', {})
                 args = fn.get('arguments', {})
-                # Ensure input is a dict
                 if isinstance(args, str):
                     try: args = json.loads(args)
-                    except: pass
+                    except: args = {}
 
+                t_id = tc.get('id') or ('toolu_' + uuid.uuid4().hex[:12])
+                
                 content_blocks.append({
                     'type': 'tool_use',
-                    'id': 'toolu_' + uuid.uuid4().hex[:12],
+                    'id': t_id,
                     'name': fn.get('name'),
                     'input': args
                 })
@@ -176,48 +177,54 @@ async def _stream_anthropic(url: str, ollama_body: dict, model: str):
     yield 'event: message_start' + chr(10) + f'data: {json.dumps({"type": "message_start", "message": {"id": mid, "type": "message", "role": "assistant", "content": [], "model": model, "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 0, "output_tokens": 0}}})}' + _SSE_SEP
     
     async with httpx.AsyncClient(timeout=120) as client:
-        async with client.stream('POST', url, json=ollama_body) as resp:
-            if resp.status_code != 200:
-                yield f'data: {json.dumps({"type": "error", "error": {"type": "upstream_error", "message": (await resp.aread()).decode()}})}' + _SSE_SEP
-                return
-            
-            content_started = False
-            async for line in resp.aiter_lines():
-                if not line.strip(): continue
-                chunk = json.loads(line)
-                msg = chunk.get('message', {})
+        try:
+            async with client.stream('POST', url, json=ollama_body) as resp:
+                if resp.status_code != 200:
+                    yield f'data: {json.dumps({"type": "error", "error": {"type": "upstream_error", "message": (await resp.aread()).decode()}})}' + _SSE_SEP
+                    return
                 
-                # Handle text
-                content = msg.get('content', '')
-                if content:
-                    if not content_started:
-                        yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})}' + _SSE_SEP
-                        content_started = True
-                    yield 'event: content_block_delta' + chr(10) + f'data: {json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": content}})}' + _SSE_SEP
-
-                # Tool calls
-                if msg.get('tool_calls'):
-                    if content_started:
-                        yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": 0})}' + _SSE_SEP
-                        content_started = False
+                content_started = False
+                last_tool_calls = []
+                
+                async for line in resp.aiter_lines():
+                    if not line.strip(): continue
+                    chunk = json.loads(line)
+                    msg = chunk.get('message', {})
                     
-                    for i, tc in enumerate(msg['tool_calls']):
-                        fn = tc.get('function', {})
-                        args = fn.get('arguments', {})
-                        if isinstance(args, str):
-                            try: args = json.loads(args)
-                            except: pass
+                    # Handle text
+                    content = msg.get('content', '')
+                    if content:
+                        if not content_started:
+                            yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})}' + _SSE_SEP
+                            content_started = True
+                        yield 'event: content_block_delta' + chr(10) + f'data: {json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": content}})}' + _SSE_SEP
 
-                        yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": i+1, "content_block": {"type": "tool_use", "id": tc.get("id", "toolu_"+uuid.uuid4().hex[:12]), "name": fn.get("name"), "input": args}})}' + _SSE_SEP
-                        yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": i+1})}' + _SSE_SEP
+                    # Capture tool calls
+                    if msg.get('tool_calls'):
+                        last_tool_calls = msg['tool_calls']
 
-                if chunk.get('done'):
-                    if content_started:
-                        yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": 0})}' + _SSE_SEP
-                    
-                    stop_reason = 'tool_use' if msg.get('tool_calls') or chunk.get('done_reason') == 'tool_calls' else 'end_turn'
-                    yield 'event: message_delta' + chr(10) + f'data: {json.dumps({"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None}, "usage": {"output_tokens": chunk.get("eval_count", 0)}})}' + _SSE_SEP
-                    yield 'event: message_stop' + chr(10) + 'data: {"type": "message_stop"}' + _SSE_SEP
+                    if chunk.get('done'):
+                        if content_started:
+                            yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": 0})}' + _SSE_SEP
+                        
+                        # Yield tool calls once at the very end
+                        for i, tc in enumerate(last_tool_calls):
+                            fn = tc.get('function', {})
+                            args = fn.get('arguments', {})
+                            if isinstance(args, str):
+                                try: args = json.loads(args)
+                                except: args = {}
+                            
+                            t_id = tc.get('id') or ('toolu_' + uuid.uuid4().hex[:12])
+                            
+                            yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": i+1, "content_block": {"type": "tool_use", "id": t_id, "name": fn.get("name"), "input": args}})}' + _SSE_SEP
+                            yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": i+1})}' + _SSE_SEP
+
+                        stop_reason = 'tool_use' if last_tool_calls or chunk.get('done_reason') == 'tool_calls' else 'end_turn'
+                        yield 'event: message_delta' + chr(10) + f'data: {json.dumps({"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None}, "usage": {"output_tokens": chunk.get("eval_count", 0)}})}' + _SSE_SEP
+                        yield 'event: message_stop' + chr(10) + 'data: {"type": "message_stop"}' + _SSE_SEP
+        except httpx.ReadTimeout:
+             yield f'data: {json.dumps({"type": "error", "error": {"type": "upstream_error", "message": "Ollama request timed out"}})}' + _SSE_SEP
 
 @app.post('/v1/chat/completions')
 @app.post('/v1/responses')
@@ -246,13 +253,13 @@ def _ollama_to_openai(ollama_resp: dict, model: str) -> dict:
         for tc in msg['tool_calls']:
             fn = tc.get('function', {})
             args = fn.get('arguments')
-            # Anthropic style to OpenAI style if needed
             if isinstance(args, dict):
                 args = json.dumps(args)
+            
             fixed_calls.append({
                 'id': tc.get('id', 'call_' + uuid.uuid4().hex[:12]),
                 'type': 'function',
-                'function': {'name': fn.get('name'), 'arguments': args}
+                'function': {'name': fn.get('name'), 'arguments': args or "{}"}
             })
         openai_msg['tool_calls'] = fixed_calls
         finish_reason = 'tool_calls'
@@ -284,48 +291,56 @@ async def _stream_openai(url: str, ollama_body: dict, model: str):
     }) + _SSE_SEP
 
     async with httpx.AsyncClient(timeout=120) as client:
-        async with client.stream('POST', url, json=ollama_body) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.strip(): continue
-                chunk = json.loads(line)
-                msg = chunk.get('message', {})
+        try:
+            async with client.stream('POST', url, json=ollama_body) as resp:
+                resp.raise_for_status()
+                last_tool_calls = []
                 
-                delta = {}
-                if msg.get('content'):
-                    delta['content'] = msg['content']
-                if msg.get('tool_calls'):
-                    fixed_calls = []
-                    for tc in msg['tool_calls']:
-                        fn = tc.get('function', {})
-                        args = fn.get('arguments')
-                        if isinstance(args, dict):
-                            args = json.dumps(args)
-                        fixed_calls.append({
-                            'id': tc.get('id', 'call_' + uuid.uuid4().hex[:12]),
-                            'type': 'function',
-                            'function': {'name': fn.get('name'), 'arguments': args}
-                        })
-                    delta['tool_calls'] = fixed_calls
-                
-                if delta:
-                    yield 'data: ' + json.dumps({
-                        'id': cid, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model,
-                        'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]
-                    }) + _SSE_SEP
-                
-                if chunk.get('done'):
-                    finish_reason = 'tool_calls' if msg.get('tool_calls') or chunk.get('done_reason') == 'tool_calls' else 'stop'
-                    yield 'data: ' + json.dumps({
-                        'id': cid, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model,
-                        'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}],
-                        'usage': {
-                            'prompt_tokens': chunk.get('prompt_eval_count', 0),
-                            'completion_tokens': chunk.get('eval_count', 0),
-                            'total_tokens': chunk.get('prompt_eval_count', 0) + chunk.get('eval_count', 0)
-                        }
-                    }) + _SSE_SEP
-                    yield 'data: [DONE]' + _SSE_SEP
+                async for line in resp.aiter_lines():
+                    if not line.strip(): continue
+                    chunk = json.loads(line)
+                    msg = chunk.get('message', {})
+                    
+                    delta = {}
+                    if msg.get('content'):
+                        delta['content'] = msg['content']
+                    
+                    if msg.get('tool_calls'):
+                        last_tool_calls = msg['tool_calls']
+                        fixed_calls = []
+                        for tc in last_tool_calls:
+                            fn = tc.get('function', {})
+                            args = fn.get('arguments')
+                            if isinstance(args, dict):
+                                args = json.dumps(args)
+                            fixed_calls.append({
+                                'index': 0,
+                                'id': tc.get('id'),
+                                'type': 'function',
+                                'function': {'name': fn.get('name'), 'arguments': args}
+                            })
+                        delta['tool_calls'] = fixed_calls
+                    
+                    if delta:
+                        yield 'data: ' + json.dumps({
+                            'id': cid, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model,
+                            'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]
+                        }) + _SSE_SEP
+                    
+                    if chunk.get('done'):
+                        finish_reason = 'tool_calls' if last_tool_calls or chunk.get('done_reason') == 'tool_calls' else 'stop'
+                        yield 'data: ' + json.dumps({
+                            'id': cid, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model,
+                            'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}],
+                            'usage': {
+                                'prompt_tokens': chunk.get('prompt_eval_count', 0),
+                                'completion_tokens': chunk.get('eval_count', 0),
+                                'total_tokens': chunk.get('prompt_eval_count', 0) + chunk.get('eval_count', 0)
+                            }
+                        }) + _SSE_SEP
+                        yield 'data: [DONE]' + _SSE_SEP
+        except httpx.ReadTimeout:
+             yield 'data: [DONE]' + _SSE_SEP
 
 @app.get('/health')
 async def health(): return {'status': 'ok', 'ollama_base': OLLAMA_BASE_URL}
