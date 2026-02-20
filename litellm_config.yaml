@@ -9,11 +9,9 @@
 # LiteLLM proxy (port 4001)  <-- manages auth, routing, logging
 #       |
 #       +--- openai/... models --> Ollama /v1 path (port 11434)
-#       |                              (MiniMax, Kimi, local coders)
 #       |
-#       +--- openai/glm-5:cloud --> ollama-openai-proxy (port 4000)
-#                                       which calls Ollama /api/chat
-#                                       with think:true
+#       +--- anthropic/... models --> ollama-openai-proxy (port 4000)
+#                                       which translates to Ollama /api/chat
 #
 # Start ollama-openai-proxy first:
 # uvicorn proxy:app --host 0.0.0.0 --port 4000
@@ -23,26 +21,21 @@
 
 model_list:
   # -------------------------------------------------------------------------
-  # GLM-5:cloud -- routed through ollama-openai-proxy for /api/chat support
-  # think:true is injected automatically by proxy for this model
-  # NOTE: No model_info/base_model here — setting base_model to a Claude model
-  # causes LiteLLM to apply Anthropic SSE translation on top of our already
-  # OpenAI-format stream, re-introducing the thinking-block hang.
+  # GLM-5:cloud -- routed via anthropic/ provider to our proxy's native
+  # /v1/messages endpoint. This prevents LiteLLM from "helping" with 
+  # OpenAI -> Anthropic translations that cause silent hangs in Claude Code.
   # -------------------------------------------------------------------------
   - model_name: glm-5:cloud
     litellm_params:
-      model: openai/glm-5:cloud
-      api_base: http://localhost:4000/v1
+      model: anthropic/glm-5:cloud
+      api_base: http://localhost:4000
       api_key: "dummy-key-not-checked-by-proxy"
 
-  # Alias so Claude Code can request claude-3-5-sonnet-20240620 by name
-  # and get routed to GLM-5:cloud via ollama-openai-proxy.
-  # NO base_model set — keeps LiteLLM on the openai/ code path, preventing
-  # Anthropic SSE re-wrapping which causes Claude Code to hang silently.
+  # Claude Code aliases -- route to glm-5 via anthropic/ provider
   - model_name: claude-3-5-sonnet-20240620
     litellm_params:
-      model: openai/glm-5:cloud
-      api_base: http://localhost:4000/v1
+      model: anthropic/glm-5:cloud
+      api_base: http://localhost:4000
       api_key: "dummy-key-not-checked-by-proxy"
 
   # -------------------------------------------------------------------------
@@ -61,9 +54,8 @@ model_list:
       api_key: "dummy-key-for-ollama"
 
 litellm_settings:
-  # Set to true to see full request/response logs in terminal
   set_verbose: true
-  drop_params: true # silently drop unsupported params (e.g. reasoning_effort)
+  drop_params: true
 
 general_settings:
-  master_key: "sk-local-dev-key" # Change this in production!
+  master_key: "sk-local-dev-key"
