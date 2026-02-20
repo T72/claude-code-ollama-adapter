@@ -3,7 +3,6 @@ ollama-openai-proxy - proxy.py
 Exposes OpenAI-compatible (/v1/chat/completions) AND Anthropic-compatible (/v1/messages) endpoints.
 Translates incoming requests to Ollama's native /api/chat format, including streaming and tools.
 '''
-
 import json
 import os
 import re
@@ -25,7 +24,7 @@ THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
 
 _ANTHROPIC_DROP_PARAMS = {'output_config', 'thinking', 'metadata', 'anthropic_version', 'betas'}
 
-app = FastAPI(title='Ollama OpenAI/Anthropic Proxy', version='0.4.0')
+app = FastAPI(title='Ollama OpenAI/Anthropic Proxy', version='0.4.1')
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
     if request_think is not None: return request_think
@@ -112,7 +111,6 @@ def _anthropic_to_ollama(body: dict) -> dict:
                 }
             })
         ollama_body['tools'] = ollama_tools
-
     if 'max_tokens' in body:
         ollama_body['options'] = {'num_predict': body['max_tokens']}
     return ollama_body
@@ -140,18 +138,24 @@ async def anthropic_messages(request: Request):
         # Text content
         if ollama_msg.get('content'):
             content_blocks.append({'type': 'text', 'text': ollama_msg['content']})
-            
+        
         # Tool calls
         stop_reason = 'end_turn'
         if ollama_msg.get('tool_calls'):
             stop_reason = 'tool_use'
             for tc in ollama_msg['tool_calls']:
                 fn = tc.get('function', {})
+                args = fn.get('arguments', {})
+                # Ensure input is a dict
+                if isinstance(args, str):
+                    try: args = json.loads(args)
+                    except: pass
+
                 content_blocks.append({
                     'type': 'tool_use',
                     'id': 'toolu_' + uuid.uuid4().hex[:12],
                     'name': fn.get('name'),
-                    'input': fn.get('arguments', {})
+                    'input': args
                 })
         
         return JSONResponse({
@@ -190,9 +194,8 @@ async def _stream_anthropic(url: str, ollama_body: dict, model: str):
                         yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})}' + _SSE_SEP
                         content_started = True
                     yield 'event: content_block_delta' + chr(10) + f'data: {json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": content}})}' + _SSE_SEP
-                
-                # Note: Ollama streaming currently doesn't provide partial tool calls nicely.
-                # If tool_calls exist in a chunk, it's usually the final one.
+
+                # Tool calls
                 if msg.get('tool_calls'):
                     if content_started:
                         yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": 0})}' + _SSE_SEP
@@ -200,7 +203,12 @@ async def _stream_anthropic(url: str, ollama_body: dict, model: str):
                     
                     for i, tc in enumerate(msg['tool_calls']):
                         fn = tc.get('function', {})
-                        yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": i+1, "content_block": {"type": "tool_use", "id": tc.get("id", "toolu_"+uuid.uuid4().hex[:12]), "name": fn.get("name"), "input": fn.get("arguments", {})}})}' + _SSE_SEP
+                        args = fn.get('arguments', {})
+                        if isinstance(args, str):
+                            try: args = json.loads(args)
+                            except: pass
+
+                        yield 'event: content_block_start' + chr(10) + f'data: {json.dumps({"type": "content_block_start", "index": i+1, "content_block": {"type": "tool_use", "id": tc.get("id", "toolu_"+uuid.uuid4().hex[:12]), "name": fn.get("name"), "input": args}})}' + _SSE_SEP
                         yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": i+1})}' + _SSE_SEP
 
                 if chunk.get('done'):
@@ -234,7 +242,19 @@ def _ollama_to_openai(ollama_resp: dict, model: str) -> dict:
     openai_msg = {'role': 'assistant', 'content': msg.get('content', '')}
     
     if msg.get('tool_calls'):
-        openai_msg['tool_calls'] = msg['tool_calls']
+        fixed_calls = []
+        for tc in msg['tool_calls']:
+            fn = tc.get('function', {})
+            args = fn.get('arguments')
+            # Anthropic style to OpenAI style if needed
+            if isinstance(args, dict):
+                args = json.dumps(args)
+            fixed_calls.append({
+                'id': tc.get('id', 'call_' + uuid.uuid4().hex[:12]),
+                'type': 'function',
+                'function': {'name': fn.get('name'), 'arguments': args}
+            })
+        openai_msg['tool_calls'] = fixed_calls
         finish_reason = 'tool_calls'
     else:
         finish_reason = 'stop'
@@ -275,7 +295,18 @@ async def _stream_openai(url: str, ollama_body: dict, model: str):
                 if msg.get('content'):
                     delta['content'] = msg['content']
                 if msg.get('tool_calls'):
-                    delta['tool_calls'] = msg['tool_calls']
+                    fixed_calls = []
+                    for tc in msg['tool_calls']:
+                        fn = tc.get('function', {})
+                        args = fn.get('arguments')
+                        if isinstance(args, dict):
+                            args = json.dumps(args)
+                        fixed_calls.append({
+                            'id': tc.get('id', 'call_' + uuid.uuid4().hex[:12]),
+                            'type': 'function',
+                            'function': {'name': fn.get('name'), 'arguments': args}
+                        })
+                    delta['tool_calls'] = fixed_calls
                 
                 if delta:
                     yield 'data: ' + json.dumps({
@@ -294,7 +325,7 @@ async def _stream_openai(url: str, ollama_body: dict, model: str):
                             'total_tokens': chunk.get('prompt_eval_count', 0) + chunk.get('eval_count', 0)
                         }
                     }) + _SSE_SEP
-    yield 'data: [DONE]' + _SSE_SEP
+                    yield 'data: [DONE]' + _SSE_SEP
 
 @app.get('/health')
 async def health(): return {'status': 'ok', 'ollama_base': OLLAMA_BASE_URL}
