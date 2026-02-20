@@ -1,4 +1,4 @@
-\"\"\"
+'''
 ollama-openai-proxy - proxy.py
 Exposes an OpenAI-compatible POST /v1/chat/completions endpoint.
 Translates incoming OpenAI-style requests to Ollama's native /api/chat format,
@@ -10,7 +10,7 @@ Supports:
  - OpenAI Responses API endpoint alias (/v1/responses)
 Usage:
  uvicorn proxy:app --host 0.0.0.0 --port 4000
-\"\"\"
+'''
 import json
 import os
 import time
@@ -23,10 +23,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
 
 # SSE requires each event to end with two newlines.
-# Defined as a constant to avoid f-string/backslash issues on Python 3.12+.
-_SSE_SEP = '\
-\
-'
+_SSE_SEP = chr(10) + chr(10)
 
 _DEFAULT_THINK_MODELS = {'glm-5:cloud', 'glm4:thinking'}
 THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
