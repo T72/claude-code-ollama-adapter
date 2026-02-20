@@ -24,7 +24,7 @@ THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
 
 _ANTHROPIC_DROP_PARAMS = {'output_config', 'thinking', 'metadata', 'anthropic_version', 'betas'}
 
-app = FastAPI(title='Ollama OpenAI/Anthropic Proxy', version='0.3.0')
+app = FastAPI(title='Ollama OpenAI/Anthropic Proxy', version='0.3.1')
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
     if request_think is not None: return request_think
@@ -56,11 +56,14 @@ def _openai_to_ollama(body: dict) -> dict:
     return ollama_body
 
 def _anthropic_to_ollama(body: dict) -> dict:
-    # Convert Anthropic /v1/messages to Ollama /api/chat
     model = body.get('model', '')
     messages = []
     system = body.get('system')
-    if system: messages.append({'role': 'system', 'content': system})
+    if isinstance(system, list):
+        system_text = ' '.join(b.get('text', '') for b in system if b.get('type') == 'text')
+        messages.append({'role': 'system', 'content': system_text})
+    elif isinstance(system, str):
+        messages.append({'role': 'system', 'content': system})
     
     for m in body.get('messages', []):
         content = m.get('content')
@@ -70,12 +73,7 @@ def _anthropic_to_ollama(body: dict) -> dict:
         else:
             messages.append(m)
             
-    ollama_body = {
-        'model': model,
-        'messages': messages,
-        'stream': body.get('stream', False),
-    }
-    # Anthropic uses max_tokens, Ollama uses num_predict
+    ollama_body = {'model': model, 'messages': messages, 'stream': body.get('stream', False)}
     if 'max_tokens' in body:
         ollama_body['options'] = {'num_predict': body['max_tokens']}
     return ollama_body
@@ -89,29 +87,18 @@ async def anthropic_messages(request: Request):
     url = OLLAMA_BASE_URL + '/api/chat'
     
     if stream:
-        return StreamingResponse(
-            _stream_anthropic(url, ollama_body, model),
-            media_type='text/event-stream'
-        )
+        return StreamingResponse(_stream_anthropic(url, ollama_body, model), media_type='text/event-stream')
     
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(url, json=ollama_body)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            return Response(content=resp.text, status_code=resp.status_code)
         ollama_data = resp.json()
-        
-        # Format as Anthropic Message
         content = ollama_data.get('message', {}).get('content', '')
         return JSONResponse({
-            'id': 'msg_' + uuid.uuid4().hex[:12],
-            'type': 'message',
-            'role': 'assistant',
-            'content': [{'type': 'text', 'text': content}],
-            'model': model,
-            'stop_reason': 'end_turn',
-            'usage': {
-                'input_tokens': ollama_data.get('prompt_eval_count', 0),
-                'output_tokens': ollama_data.get('eval_count', 0)
-            }
+            'id': 'msg_' + uuid.uuid4().hex[:12], 'type': 'message', 'role': 'assistant',
+            'content': [{'type': 'text', 'text': content}], 'model': model, 'stop_reason': 'end_turn',
+            'usage': {'input_tokens': ollama_data.get('prompt_eval_count', 0), 'output_tokens': ollama_data.get('eval_count', 0)}
         })
 
 async def _stream_anthropic(url: str, ollama_body: dict, model: str):
@@ -121,14 +108,15 @@ async def _stream_anthropic(url: str, ollama_body: dict, model: str):
     
     async with httpx.AsyncClient(timeout=120) as client:
         async with client.stream('POST', url, json=ollama_body) as resp:
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                yield f'data: {json.dumps({"type": "error", "error": {"type": "upstream_error", "message": (await resp.aread()).decode()}})}' + _SSE_SEP
+                return
             async for line in resp.aiter_lines():
                 if not line.strip(): continue
                 chunk = json.loads(line)
                 content = chunk.get('message', {}).get('content', '')
                 if content:
                     yield 'event: content_block_delta' + chr(10) + f'data: {json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": content}})}' + _SSE_SEP
-                
                 if chunk.get('done'):
                     yield 'event: content_block_stop' + chr(10) + f'data: {json.dumps({"type": "content_block_stop", "index": 0})}' + _SSE_SEP
                     yield 'event: message_delta' + chr(10) + f'data: {json.dumps({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": chunk.get("eval_count", 0)}})}' + _SSE_SEP
@@ -153,10 +141,7 @@ async def chat_completions(request: Request):
 def _ollama_to_openai(ollama_resp: dict, model: str) -> dict:
     content = ollama_resp.get('message', {}).get('content', '')
     return {
-        'id': 'chatcmpl-' + uuid.uuid4().hex[:12],
-        'object': 'chat.completion',
-        'created': int(time.time()),
-        'model': model,
+        'id': 'chatcmpl-' + uuid.uuid4().hex[:12], 'object': 'chat.completion', 'created': int(time.time()), 'model': model,
         'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}],
         'usage': {'prompt_tokens': ollama_resp.get('prompt_eval_count', 0), 'completion_tokens': ollama_resp.get('eval_count', 0), 'total_tokens': ollama_resp.get('prompt_eval_count', 0) + ollama_resp.get('eval_count', 0)}
     }
