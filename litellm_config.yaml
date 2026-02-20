@@ -4,16 +4,16 @@
 # Architecture:
 #
 # Claude Code / other clients
-#     |
-#     v
+#       |
+#       v
 # LiteLLM proxy (port 4001)  <-- manages auth, routing, logging
-#     |
-#     +--- openai/... models --> Ollama /v1 path (port 11434)
-#     |                          (MiniMax, Kimi, local coders)
-#     |
-#     +--- openai/glm-5:cloud --> ollama-openai-proxy (port 4000)
-#                                which calls Ollama /api/chat
-#                                with think:true
+#       |
+#       +--- openai/... models --> Ollama /v1 path (port 11434)
+#       |                              (MiniMax, Kimi, local coders)
+#       |
+#       +--- openai/glm-5:cloud --> ollama-openai-proxy (port 4000)
+#                                       which calls Ollama /api/chat
+#                                       with think:true
 #
 # Start ollama-openai-proxy first:
 # uvicorn proxy:app --host 0.0.0.0 --port 4000
@@ -25,23 +25,25 @@ model_list:
   # -------------------------------------------------------------------------
   # GLM-5:cloud -- routed through ollama-openai-proxy for /api/chat support
   # think:true is injected automatically by proxy for this model
+  # NOTE: No model_info/base_model here — setting base_model to a Claude model
+  # causes LiteLLM to apply Anthropic SSE translation on top of our already
+  # OpenAI-format stream, re-introducing the thinking-block hang.
   # -------------------------------------------------------------------------
   - model_name: glm-5:cloud
     litellm_params:
       model: openai/glm-5:cloud
       api_base: http://localhost:4000/v1
       api_key: "dummy-key-not-checked-by-proxy"
-    model_info:
-      base_model: claude-3-5-sonnet-20240620
 
-  # Alias for Claude Code compatibility
+  # Alias so Claude Code can request claude-3-5-sonnet-20240620 by name
+  # and get routed to GLM-5:cloud via ollama-openai-proxy.
+  # NO base_model set — keeps LiteLLM on the openai/ code path, preventing
+  # Anthropic SSE re-wrapping which causes Claude Code to hang silently.
   - model_name: claude-3-5-sonnet-20240620
     litellm_params:
       model: openai/glm-5:cloud
       api_base: http://localhost:4000/v1
       api_key: "dummy-key-not-checked-by-proxy"
-    model_info:
-      base_model: claude-3-5-sonnet-20240620
 
   # -------------------------------------------------------------------------
   # Models that work fine on Ollama's /v1 OpenAI-compatible path
