@@ -1,4 +1,4 @@
-"""
+\"\"\"
 ollama-openai-proxy - proxy.py
 Exposes an OpenAI-compatible POST /v1/chat/completions endpoint.
 Translates incoming OpenAI-style requests to Ollama's native /api/chat format,
@@ -10,7 +10,7 @@ Supports:
  - OpenAI Responses API endpoint alias (/v1/responses)
 Usage:
  uvicorn proxy:app --host 0.0.0.0 --port 4000
-"""
+\"\"\"
 import json
 import os
 import time
@@ -24,7 +24,9 @@ OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
 
 # SSE requires each event to end with two newlines.
 # Defined as a constant to avoid f-string/backslash issues on Python 3.12+.
-_SSE_SEP = '\n\n'
+_SSE_SEP = '\
+\
+'
 
 _DEFAULT_THINK_MODELS = {'glm-5:cloud', 'glm4:thinking'}
 THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
@@ -36,7 +38,7 @@ THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
 app = FastAPI(
     title='Ollama OpenAI Proxy',
     description='OpenAI-compatible proxy for Ollama /api/chat',
-    version='0.1.7',
+    version='0.1.8',
 )
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
@@ -107,11 +109,13 @@ def _ollama_to_openai(ollama_resp: dict, model: str) -> dict:
 def _ollama_chunk_to_openai_sse(chunk: dict, model: str, cid: str) -> str:
     msg = chunk.get('message', {})
     delta: dict = {}
-    if msg.get('role'):
+    
+    # Use 'in' check to include empty strings (critical for first chunk)
+    if 'role' in msg:
         delta['role'] = msg['role']
-    if msg.get('content'):
+    if 'content' in msg:
         delta['content'] = msg['content']
-    if msg.get('thinking'):
+    if 'thinking' in msg:
         delta['reasoning_content'] = msg['thinking']
 
     finish_reason = None
@@ -120,6 +124,7 @@ def _ollama_chunk_to_openai_sse(chunk: dict, model: str, cid: str) -> str:
     if chunk.get('done'):
         reason = chunk.get('done_reason', 'stop')
         finish_reason = 'length' if reason == 'length' else 'stop'
+        
         # Include usage in the final chunk if available
         usage = {
             'prompt_tokens': chunk.get('prompt_eval_count', 0),
@@ -137,6 +142,7 @@ def _ollama_chunk_to_openai_sse(chunk: dict, model: str, cid: str) -> str:
         'model': model,
         'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish_reason}],
     }
+
     if usage:
         payload['usage'] = usage
 
