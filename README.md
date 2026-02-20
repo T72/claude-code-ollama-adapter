@@ -28,7 +28,7 @@ Claude Code / other clients
 
 - Translates OpenAI `/v1/chat/completions` requests to Ollama `/api/chat` format
 - Auto-injects `think: true` for GLM-5:cloud and other configurable reasoning models
-- Exposes `reasoning_content` field in responses (Anthropic-style, readable by Claude Code)
+- Suppresses `reasoning_content` in responses to prevent Claude Code silent hangs (LiteLLM interleaved-thinking beta requires a `signature` Ollama never provides)
 - Full **streaming** (SSE) and **non-streaming** support
 - `/v1/models` endpoint proxies Ollama's model list
 - `/health` endpoint for monitoring
