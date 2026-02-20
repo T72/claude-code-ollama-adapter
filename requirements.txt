@@ -1,0 +1,7 @@
+# Core proxy dependencies
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+httpx>=0.27.0
+
+# Optional: for running LiteLLM proxy alongside
+# litellm[proxy]>=1.40.0
