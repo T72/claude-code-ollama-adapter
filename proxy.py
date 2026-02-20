@@ -5,11 +5,16 @@ Translates incoming OpenAI-style requests to Ollama's native /api/chat format,
 then maps Ollama's response back to OpenAI format.
 Supports:
  - Non-streaming and streaming (SSE) responses
- - GLM-5:cloud think / reasoning_content fields (opt-in via THINK_MODELS env)
- - Configurable Ollama base URL and per-model think flag
+ - Configurable Ollama base URL and per-model think flag (opt-in via THINK_MODELS env)
  - OpenAI Responses API endpoint alias (/v1/responses)
  - Anthropic-format content blocks flattened to plain text
  - Strips markdown code fences from JSON-only responses
+Note on thinking/reasoning_content:
+ reasoning_content is intentionally NOT forwarded in responses.
+ LiteLLM's Anthropic SSE translation wraps it in a 'thinking' content block
+ that requires a valid 'signature' field (interleaved-thinking beta). Since
+ Ollama never provides a signature, Claude Code hangs waiting for a valid
+ thinking block. Solution: suppress reasoning_content entirely at proxy level.
 Usage:
  uvicorn proxy:app --host 0.0.0.0 --port 4000
 '''
@@ -29,8 +34,8 @@ OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
 _SSE_SEP = chr(10) + chr(10)
 
 # Think models: opt-in only via THINK_MODELS env var (e.g. THINK_MODELS=glm-5:cloud)
-# Disabled by default so that LiteLLM/Claude Code streaming is not broken by
-# reasoning_content blocks which the Anthropic SSE translation cannot handle.
+# Disabled by default — reasoning_content is suppressed in responses regardless
+# (see note in module docstring).
 _DEFAULT_THINK_MODELS: set[str] = set()
 THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
   m.strip()
@@ -56,7 +61,7 @@ _CODE_FENCE_RE = re.compile(
 app = FastAPI(
   title='Ollama OpenAI Proxy',
   description='OpenAI-compatible proxy for Ollama /api/chat',
-  version='0.2.0',
+  version='0.2.1',
 )
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
@@ -77,17 +82,11 @@ def _strip_code_fence(text: str) -> str:
   return text
 
 def _normalize_messages(messages: list) -> list:
-  """Flatten Anthropic-style content block lists to plain strings.
-
-  Claude Code sends system/user messages as a list of typed content
-  blocks, e.g. [{'type': 'text', 'text': '...'}].  Ollama expects
-  plain strings, so we join all text blocks here.
-  """
+  """Flatten Anthropic-style content block lists to plain strings."""
   normalized = []
   for msg in messages:
     content = msg.get('content')
     if isinstance(content, list):
-      # Extract and join all text-type blocks.
       text = ' '.join(
         block.get('text', '')
         for block in content
@@ -129,17 +128,17 @@ def _openai_to_ollama(body: dict) -> dict:
 def _ollama_to_openai(ollama_resp: dict, model: str) -> dict:
   msg = ollama_resp.get('message', {})
   content: str = _strip_code_fence(msg.get('content', ''))
-  thinking: Optional[str] = msg.get('thinking')
 
   finish_reason = 'stop'
   if ollama_resp.get('done_reason') == 'length':
     finish_reason = 'length'
 
+  # DO NOT include reasoning_content / thinking here.
+  # LiteLLM wraps it in an Anthropic 'thinking' content block that requires
+  # a valid 'signature' field. Ollama never provides one, causing Claude Code
+  # to hang silently waiting for a complete thinking block.
   choice_msg: dict = {'role': 'assistant', 'content': content}
-  if thinking:
-    choice_msg['reasoning_content'] = thinking
 
-  # usage fields are critical for LiteLLM/Claude Code cost calculation
   usage = {
     'prompt_tokens': ollama_resp.get('prompt_eval_count', 0),
     'completion_tokens': ollama_resp.get('eval_count', 0),
@@ -162,15 +161,11 @@ def _ollama_chunk_to_openai_sse(chunk: dict, model: str, cid: str) -> str:
   msg = chunk.get('message', {})
   delta: dict = {}
 
-  # Use 'in' check to include empty strings (critical for first chunk)
   if 'role' in msg:
     delta['role'] = msg['role']
   if 'content' in msg:
     delta['content'] = msg['content']
-  # Only include reasoning_content if thinking is enabled for this model.
-  # When going through LiteLLM/Anthropic path, omit it to prevent stream hang.
-  if 'thinking' in msg and msg.get('thinking'):
-    delta['reasoning_content'] = msg['thinking']
+  # reasoning_content intentionally omitted — see module docstring.
 
   finish_reason = None
   usage = None
@@ -178,8 +173,6 @@ def _ollama_chunk_to_openai_sse(chunk: dict, model: str, cid: str) -> str:
   if chunk.get('done'):
     reason = chunk.get('done_reason', 'stop')
     finish_reason = 'length' if reason == 'length' else 'stop'
-
-    # Include usage in the final chunk if available
     usage = {
       'prompt_tokens': chunk.get('prompt_eval_count', 0),
       'completion_tokens': chunk.get('eval_count', 0),
@@ -221,7 +214,6 @@ async def list_models():
 @app.post('/v1/chat/completions')
 async def chat_completions(request: Request):
   body = await request.json()
-  # Drop Claude Code / Anthropic-specific params Ollama doesn't understand.
   for param in _ANTHROPIC_DROP_PARAMS:
     body.pop(param, None)
 
