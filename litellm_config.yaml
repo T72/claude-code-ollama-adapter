@@ -1,0 +1,64 @@
+# litellm_config.yaml
+# LiteLLM proxy configuration for use alongside ollama-openai-proxy
+#
+# Architecture:
+#
+#   Claude Code / other clients
+#         |
+#         v
+#   LiteLLM proxy  (port 4001)   <-- manages auth, routing, logging
+#         |
+#         +--- openai/... models --> Ollama /v1 path  (port 11434)
+#         |                         (MiniMax, Kimi, local coders)
+#         |
+#         +--- openai/glm-5:cloud --> ollama-openai-proxy (port 4000)
+#                                     which calls Ollama /api/chat
+#                                     with think:true
+#
+# Start ollama-openai-proxy first:
+#   uvicorn proxy:app --host 0.0.0.0 --port 4000
+#
+# Then start LiteLLM:
+#   litellm --config litellm_config.yaml --port 4001
+
+model_list:
+
+  # -------------------------------------------------------------------------
+  # GLM-5:cloud  -- routed through ollama-openai-proxy for /api/chat support
+  # think:true is injected automatically by proxy for this model
+  # -------------------------------------------------------------------------
+  - model_name: glm-5:cloud
+    litellm_params:
+      model: openai/glm-5:cloud
+      api_base: http://localhost:4000/v1
+      api_key: "dummy-key-not-checked-by-proxy"
+
+  # -------------------------------------------------------------------------
+  # Models that work fine on Ollama's /v1 OpenAI-compatible path
+  # -------------------------------------------------------------------------
+  - model_name: kimi-k2:latest
+    litellm_params:
+      model: openai/kimi-k2:latest
+      api_base: http://localhost:11434/v1
+      api_key: "dummy-key-for-ollama"
+
+  - model_name: minimax-text:latest
+    litellm_params:
+      model: openai/minimax-text:latest
+      api_base: http://localhost:11434/v1
+      api_key: "dummy-key-for-ollama"
+
+  # Add your local coding models here the same way:
+  # - model_name: qwen2.5-coder:14b
+  #   litellm_params:
+  #     model: openai/qwen2.5-coder:14b
+  #     api_base: http://localhost:11434/v1
+  #     api_key: "dummy-key-for-ollama"
+
+litellm_settings:
+  # Set to true to see full request/response logs in terminal
+  set_verbose: false
+  drop_params: true          # silently drop unsupported params (e.g. reasoning_effort)
+
+general_settings:
+  master_key: "sk-local-dev-key"   # Change this in production!
