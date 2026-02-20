@@ -175,7 +175,7 @@ async def chat_completions(request: Request):
         )
 
     async with httpx.AsyncClient(timeout=120) as client:
-        resp = fix: include usage/tokens in responses for cost calculation supportawait client.post(url, json=ollama_body)
+        resp = await client.post(url, json=ollama_body)
         resp.raise_for_status()
         return JSONResponse(_ollama_to_openai(resp.json(), model))
 
