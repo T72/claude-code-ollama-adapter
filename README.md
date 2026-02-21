@@ -16,15 +16,15 @@ Both translate transparently to Ollama's `/api/chat` format, handling streaming,
 ## Architecture
 
 ```
-Claude Code / Anthropic SDK         OpenAI SDK / LiteLLM
-        |                                    |
-        | POST /v1/messages                  | POST /v1/chat/completions
-        v                                    v
-    claude-code-ollama-adapter :4000
-                    |
-                    | POST /api/chat
-                    v
-               Ollama :11434
+Claude Code / other clients
+    |
+    v
+LiteLLM proxy :4001 (auth, routing, logging)
+    |
+    +-- openai/* --> Ollama :11434/v1 (Kimi, MiniMax, local coders)
+    |
+    +-- glm-5:cloud --> ollama-openai-proxy :4000 --> Ollama :11434/api/chat
+                                                         (think: true injected)
 ```
 
 ---
