@@ -1,5 +1,5 @@
 '''
-ollama-openai-proxy - proxy.py
+claude-code-ollama-adapter - proxy.py
 Exposes OpenAI-compatible (/v1/chat/completions) AND Anthropic-compatible (/v1/messages) endpoints.
 Translates incoming requests to Ollama's native /api/chat format, including streaming and tools.
 '''
@@ -24,7 +24,7 @@ THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
 
 _ANTHROPIC_DROP_PARAMS = {'output_config', 'thinking', 'metadata', 'anthropic_version', 'betas'}
 
-app = FastAPI(title='Ollama OpenAI/Anthropic Proxy', version='0.4.4')
+app = FastAPI(title='Claude Code Ollama Adapter', version='0.4.4')
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
     if request_think is not None: return request_think
