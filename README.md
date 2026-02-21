@@ -23,7 +23,7 @@ LiteLLM proxy :4001 (auth, routing, logging)
     |
     +-- openai/* --> Ollama :11434/v1 (Kimi, MiniMax, local coders)
     |
-    +-- glm-5:cloud --> ollama-openai-proxy :4000 --> Ollama :11434/api/chat
+    +-- glm-5:cloud --> claude-code-ollama-adapter :4000 --> Ollama :11434/api/chat
                                                          (think: true injected)
 ```
 
