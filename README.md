@@ -16,6 +16,24 @@ Both translate transparently to Ollama's `/api/chat` format, handling streaming,
 
 ## Architecture
 
+This adapter supports two operating modes:
+
+### Mode 1: Direct Mode (Recommended for Local Development)
+
+```plaintext
+Claude Code
+    |
+    v
+claude-code-ollama-adapter :4000 --> Ollama :11434/api/chat
+                            (think: true injected)
+```
+
+- **Bypasses LiteLLM** - No budget limits, no authentication required
+- **Use case**: Local development, prototyping, testing
+- **Start**: `uvicorn proxy:app --host 0.0.0.0 --port 4000`
+
+### Mode 2: LiteLLM Mode (For Production/Team Use)
+
 ```plaintext
 Claude Code / other clients
     |
@@ -27,6 +45,10 @@ LiteLLM proxy :4001 (auth, routing, logging)
     +-- glm-5:cloud --> claude-code-ollama-adapter :4000 --> Ollama :11434/api/chat
                                                          (think: true injected)
 ```
+
+- **Managed by LiteLLM** - Auth, routing, logging, spend tracking
+- **Use case**: Team environments, production deployments
+- **Start**: `litellm --config litellm_config.yaml --port 4001`
 
 ---
 
@@ -99,6 +121,80 @@ model_list:
 ```
 
 See [`litellm_config.yaml`](litellm_config.yaml) for a full example.
+
+---
+
+## Direct Mode (Skip LiteLLM)
+
+For local development without LiteLLM overhead, you can bypass LiteLLM entirely and connect Claude Code directly to the adapter. This is recommended when:
+
+- You want to avoid budget/spending limits imposed by LiteLLM
+- You don't need authentication or spend tracking
+- You want the simplest possible setup for local prototyping
+
+### Setup
+
+```bash
+# Terminal 1: Start the adapter
+uvicorn proxy:app --host 0.0.0.0 --port 4000
+
+# Terminal 2: Configure and run Claude Code
+export ANTHROPIC_BASE_URL=http://localhost:4000
+export ANTHROPIC_API_KEY=ollama
+claude --model qwen3-coder:latest
+```
+
+### Using the Helper Script
+
+For convenience, use the provided template script:
+
+```bash
+# Copy the template
+cp direct-mode.sh.example direct-mode.sh
+
+# Customize if needed (optional)
+# Edit direct-mode.sh to adjust THINK_MODELS or other settings
+
+# Source the configuration
+source direct-mode.sh
+
+# Start the adapter (in another terminal)
+uvicorn proxy:app --host 0.0.0.0 --port 4000
+
+# Run Claude Code with any local model
+claude --model qwen3-coder:latest
+claude --model kimi-k2:latest
+claude --model llama3:latest
+```
+
+### Using Aliases (Recommended for Switching Modes)
+
+For convenient switching between LiteLLM and Direct Mode, add these aliases to your `~/.bashrc`:
+
+```bash
+# For LiteLLM mode (port 4100) - for cloud models like glm-5:cloud
+alias claude-local='ANTHROPIC_BASE_URL=http://localhost:4100 ANTHROPIC_API_KEY=sk-local-free claude'
+
+# For Direct Mode (port 4000) - for local Ollama models
+alias claude-direct='ANTHROPIC_BASE_URL=http://localhost:4000 ANTHROPIC_API_KEY=ollama claude'
+```
+
+Then you can easily switch between modes:
+
+```bash
+claude-local --model glm-5:cloud      # Uses LiteLLM on port 4100
+claude-direct --model qwen3:14b         # Uses adapter directly on port 4000
+```
+
+### When to Use Direct Mode vs LiteLLM Mode
+
+| Feature | Direct Mode | LiteLLM Mode |
+| --- | --- | --- |
+| **Budget limits** | None | Configurable |
+| **Authentication** | None | Virtual keys |
+| **Spend tracking** | No | Yes |
+| **Setup complexity** | Minimal | Requires config |
+| **Best for** | Local dev, prototyping | Production, teams |
 
 ---
 
