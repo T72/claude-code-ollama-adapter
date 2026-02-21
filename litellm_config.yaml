@@ -22,7 +22,7 @@
 model_list:
   # -------------------------------------------------------------------------
   # GLM-5:cloud -- routed via anthropic/ provider to our proxy's native
-  # /v1/messages endpoint. This prevents LiteLLM from "helping" with 
+  # /v1/messages endpoint. This prevents LiteLLM from "helping" with
   # OpenAI -> Anthropic translations that cause silent hangs in Claude Code.
   # -------------------------------------------------------------------------
   - model_name: glm-5:cloud
@@ -57,5 +57,5 @@ litellm_settings:
   set_verbose: true
   drop_params: true
 
-general_settings:
-  master_key: "sk-local-dev-key"
+# general_settings:
+#   master_key: "sk-your-key"  # Requires DATABASE_URL to be set; without it, requests will fail with "No connected db."

@@ -1,0 +1,87 @@
+# litellm_config.secure.example.yaml
+# Example configuration for DB-backed secure mode with LiteLLM
+#
+# IMPORTANT: This configuration is OPTIONAL. Use this only if you need:
+# - Virtual key authentication
+# - Spend tracking
+# - Proxy-level access control
+#
+# If you use master_key WITHOUT setting DATABASE_URL, all requests will fail
+# with: "No connected db."
+#
+# ------------------------------------------------------------
+# Setup Required:
+# ------------------------------------------------------------
+# 1. Set the master_key (replace "sk-your-secure-key-here"):
+#    - Can be set via this config OR environment variable LITELLM_MASTER_KEY
+#
+# 2. Set DATABASE_URL (required when using master_key):
+#    - PostgreSQL: postgresql://user:password@localhost:5432/litellm
+#    - SQLite: sqlite:///./litellm.db
+#    - Set via environment variable DATABASE_URL
+#
+# 3. Start LiteLLM with your database:
+#    export DATABASE_URL="postgresql://user:password@localhost:5432/litellm"
+#    litellm --config litellm_config.secure.example.yaml --port 4001
+#
+# ------------------------------------------------------------
+# Security Notes:
+# ------------------------------------------------------------
+# - Never commit actual master keys to version control
+# - Use environment variables or a secrets manager in production
+# - Consider using LiteLLM's key rotation and expiry features
+# - Review LiteLLM's security documentation: https://docs.litellm.ai/docs/proxy/configs
+
+model_list:
+  # -------------------------------------------------------------------------
+  # GLM-5:cloud -- routed via anthropic/ provider to our proxy's native
+  # /v1/messages endpoint.
+  # -------------------------------------------------------------------------
+  - model_name: glm-5:cloud
+    litellm_params:
+      model: anthropic/glm-5:cloud
+      api_base: http://localhost:4000
+      api_key: "dummy-key-not-checked-by-proxy"
+
+  # Claude Code aliases -- route to glm-5 via anthropic/ provider
+  - model_name: claude-3-5-sonnet-20240620
+    litellm_params:
+      model: anthropic/glm-5:cloud
+      api_base: http://localhost:4000
+      api_key: "dummy-key-not-checked-by-proxy"
+
+  # -------------------------------------------------------------------------
+  # Models that work fine on Ollama's /v1 OpenAI-compatible path
+  # -------------------------------------------------------------------------
+  - model_name: kimi-k2:latest
+    litellm_params:
+      model: openai/kimi-k2:latest
+      api_base: http://localhost:11434/v1
+      api_key: "dummy-key-for-ollama"
+
+  - model_name: minimax-text:latest
+    litellm_params:
+      model: openai/minimax-text:latest
+      api_base: http://localhost:11434/v1
+      api_key: "dummy-key-for-ollama"
+
+litellm_settings:
+  set_verbose: true
+  drop_params: true
+
+# ------------------------------------------------------------
+# Secure Mode Settings
+# ------------------------------------------------------------
+# WARNING: master_key requires DATABASE_URL to be set!
+# Without a database, requests will fail with "No connected db."
+general_settings:
+  # OPTIONAL: Set master_key here OR via LITELLM_MASTER_KEY env var
+  # master_key: "sk-your-secure-key-here"
+  #
+  # The master_key enables:
+  # - Virtual key authentication (keys stored in DB)
+  # - API key management via /key endpoints
+  # - Spend tracking and rate limiting
+  # - Audit logging
+  #
+  # For more info: https://docs.litellm.ai/docs/proxy/virtual-keys

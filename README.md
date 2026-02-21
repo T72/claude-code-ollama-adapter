@@ -110,6 +110,43 @@ See [`litellm_config.yaml`](litellm_config.yaml) for a full example.
 
 ---
 
+## LiteLLM Modes
+
+This repo supports two LiteLLM operating modes:
+
+### Mode 1: DB-Free Local Mode (Default)
+
+Use `litellm_config.yaml` for local development without a database.
+
+- **No authentication** - requests pass through directly
+- **Works out of the box** - just run `litellm --config litellm_config.yaml`
+- **Use case**: Local development, testing, prototyping
+
+```bash
+litellm --config litellm_config.yaml --port 4001
+```
+
+### Mode 2: DB-Backed Secure Mode (Optional)
+
+Use `litellm_config.secure.example.yaml` for production or shared environments requiring authentication.
+
+- **Virtual key authentication** - requires `master_key` + `DATABASE_URL`
+- **Spend tracking & rate limiting** - built-in LiteLLM features
+- **Use case**: Production deployments, team environments
+
+```bash
+# Set required environment variables
+export DATABASE_URL="postgresql://user:password@localhost:5432/litellm"
+export LITELLM_MASTER_KEY="sk-your-secure-key"
+
+# Start LiteLLM with secure config
+litellm --config litellm_config.secure.example.yaml --port 4001
+```
+
+> ⚠️ **Warning**: Setting `master_key` without `DATABASE_URL` will cause all requests to fail with `No connected db.` error. Use the default `litellm_config.yaml` for local development.
+
+---
+
 ## Testing
 
 ```bash
