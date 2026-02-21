@@ -1,8 +1,15 @@
-# ollama-openai-proxy
+# claude-code-ollama-adapter
 
-> **A lightweight FastAPI adapter that bridges LiteLLM / Claude Code to Ollama's native `/api/chat` endpoint.**
+[![CI](https://github.com/T72/claude-code-ollama-adapter/actions/workflows/ci.yml/badge.svg)](https://github.com/T72/claude-code-ollama-adapter/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-LiteLLM's `openai/` provider always targets `/v1/chat/completions` and sends OpenAI-schema JSON. Ollama's `/api/chat` endpoint uses a completely different schema (including the `think` reasoning flag for GLM-5:cloud). This proxy sits between them and handles the translation transparently.
+> **A FastAPI proxy that lets Claude Code (and any Anthropic or OpenAI-compatible client) talk directly to Ollama's native `/api/chat` endpoint.**
+
+Exposes two fully-compatible endpoints:
+- **`/v1/messages`** — Anthropic Messages API (used natively by Claude Code)
+- **`/v1/chat/completions`** — OpenAI Chat Completions API (used by LiteLLM, OpenAI SDKs, etc.)
+
+Both translate transparently to Ollama's `/api/chat` format, handling streaming, tool calls, and optional `think` reasoning injection.
 
 ---
 
@@ -20,38 +27,38 @@ LiteLLM proxy :4001 (auth, routing, logging)
                                                          (think: true injected)
 ```
 
-**Key insight:** GLM-5:cloud is pointed at the proxy (`localhost:4000`) inside `litellm_config.yaml` instead of directly at Ollama. All other models continue to use Ollama's `/v1` path unchanged. No risk to your working Claude Code setup.
-
 ---
 
 ## Features
 
-- Translates OpenAI `/v1/chat/completions` requests to Ollama `/api/chat` format
-- Auto-injects `think: true` for GLM-5:cloud and other configurable reasoning models
-- Exposes `reasoning_content` field in responses (Anthropic-style, readable by Claude Code)
-- Full **streaming** (SSE) and **non-streaming** support
-- `/v1/models` endpoint proxies Ollama's model list
-- `/health` endpoint for monitoring
+- **Anthropic `/v1/messages`** endpoint — full Claude Code compatibility (streaming + tool use)
+- **OpenAI `/v1/chat/completions`** endpoint — LiteLLM / OpenAI SDK compatible
+- **Tool / function calling** — translates both directions (Anthropic `tool_use` ↔ Ollama `tool_calls`)
+- **Reasoning / thinking** support — opt-in `think: true` injection for GLM-5:cloud and configurable models
+- **Full streaming** (SSE) and **non-streaming** support
+- **`/v1/models`** — proxies Ollama's model list in OpenAI format
+- **`/health`** — health check endpoint
 - Zero config needed — sensible defaults, everything overridable via env vars
-- Single file, ~250 lines, easy to read and modify
-- **Docker Support** — Includes Dockerfile and docker-compose.yml
+- Single file `proxy.py`, ~350 lines, easy to read and modify
+- **Docker support** — includes `Dockerfile`
 - **CI/CD** — GitHub Actions workflow for automated testing
 
 ---
 
 ## Quick Start
 
-### 1. Clone and enter the repo
+### 1. Clone the repo
 
 ```bash
-git clone https://github.com/T72/ollama-openai-proxy.git
-cd ollama-openai-proxy
+git clone https://github.com/T72/claude-code-ollama-adapter.git
+cd claude-code-ollama-adapter
 ```
 
 ### 2. Run with Docker (Recommended)
 
 ```bash
-docker-compose up -d --build
+docker build -t claude-code-ollama-adapter .
+docker run -p 4000:4000 claude-code-ollama-adapter
 ```
 
 The proxy will be available at `http://localhost:4000`.
@@ -65,12 +72,32 @@ uvicorn proxy:app --host 0.0.0.0 --port 4000
 
 ---
 
-## Testing
+## Usage with Claude Code
 
-Run the unit tests to verify translation logic:
+Point Claude Code at the adapter instead of Anthropic directly:
+
 ```bash
-pytest tests/
+export ANTHROPIC_BASE_URL=http://localhost:4000
+export ANTHROPIC_API_KEY=ollama
+claude --model qwen3-coder:latest
 ```
+
+---
+
+## Usage with LiteLLM
+
+In your `litellm_config.yaml`, route specific models through the adapter:
+
+```yaml
+model_list:
+  - model_name: glm-5:cloud
+    litellm_params:
+      model: openai/glm-5:cloud
+      api_base: http://localhost:4000
+      api_key: ollama
+```
+
+See [`litellm_config.yaml`](litellm_config.yaml) for a full example.
 
 ---
 
@@ -83,6 +110,27 @@ pytest tests/
 
 ---
 
+## Testing
+
+```bash
+pip install pytest httpx fastapi[testclient]
+pytest tests/
+```
+
+---
+
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request.
+
+---
+
+## Security
+
+To report a vulnerability, please see [SECURITY.md](SECURITY.md).
+
+---
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
