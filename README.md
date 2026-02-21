@@ -6,6 +6,7 @@
 > **A FastAPI proxy that lets Claude Code (and any Anthropic or OpenAI-compatible client) talk directly to Ollama's native `/api/chat` endpoint.**
 
 Exposes two fully-compatible endpoints:
+
 - **`/v1/messages`** — Anthropic Messages API (used natively by Claude Code)
 - **`/v1/chat/completions`** — OpenAI Chat Completions API (used by LiteLLM, OpenAI SDKs, etc.)
 
@@ -15,7 +16,7 @@ Both translate transparently to Ollama's `/api/chat` format, handling streaming,
 
 ## Architecture
 
-```
+```plaintext
 Claude Code / other clients
     |
     v
