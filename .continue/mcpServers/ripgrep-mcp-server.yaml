@@ -1,0 +1,11 @@
+name: Ripgrep
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: Ripgrep
+    type: stdio
+    command: npx
+    args:
+      - -y
+      - mcp-ripgrep
+    env: {}
