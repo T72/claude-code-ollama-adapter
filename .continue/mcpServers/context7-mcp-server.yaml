@@ -1,0 +1,13 @@
+name: Context7
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: Context7
+    type: stdio
+    command: npx
+    args:
+      - -y
+      - "@upstash/context7-mcp"
+    env:
+      UPSTASH_REDIS_REST_URL: "${env:UPSTASH_REDIS_REST_URL}"
+      UPSTASH_REDIS_REST_TOKEN: "${env:UPSTASH_REDIS_REST_TOKEN}"

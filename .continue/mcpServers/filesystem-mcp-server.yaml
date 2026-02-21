@@ -1,0 +1,11 @@
+name: Filesystem (Workspace)
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: Filesystem (Workspace)
+    type: stdio
+    command: npx
+    args:
+      - -y
+      - "@modelcontextprotocol/server-filesystem"
+    env: {}
