@@ -104,7 +104,7 @@ See [`litellm_config.yaml`](litellm_config.yaml) for a full example.
 ## Configuration
 
 | Environment variable | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `THINK_MODELS` | (empty) | Comma-separated model names that get `think: true` injected |
 
