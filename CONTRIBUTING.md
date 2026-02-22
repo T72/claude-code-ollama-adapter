@@ -8,10 +8,20 @@ Thank you for your interest in contributing! This document explains how to get i
 
 | Branch | Purpose |
 |--------|----------|
-| `main` | Stable, released code. All PRs must target `main`. |
-| `develop` | Active development. Experimental features land here first. |
+| `main` | Stable, released code. Deployable at all times. **Hotfixes only.** |
+| `develop` | Active development. All feature PRs target here first. |
 
-Please base your feature branches off `main` unless you are working on something experimental, in which case branch from `develop`.
+> **Note:** For complete branching workflow details, see [docs/developer/branching-strategy.md](docs/developer/branching-strategy.md).
+
+### Feature Workflow
+- Create feature branches from `develop`: `git checkout develop && git checkout -b feat/my-feature`
+- Target `develop` for pull requests
+- Features merge to `develop` via squash merge
+
+### Hotfix Workflow
+- Create hotfix branches from `main`: `git checkout main && git checkout -b hotfix/my-fix`
+- Target `main` for hotfix pull requests
+- Hotfixes are back-merged to `develop` automatically
 
 ---
 
@@ -27,12 +37,25 @@ cd claude-code-ollama-adapter
 ### 2. Create a Branch
 
 ```bash
+# For features: branch from develop
+git checkout develop
 git checkout -b fix/my-bugfix
 # or
 git checkout -b feat/my-feature
+
+# For hotfixes: branch from main
+git checkout main
+git checkout -b hotfix/my-fix
 ```
 
-Use conventional prefixes: `fix/`, `feat/`, `docs/`, `chore/`, `refactor/`.
+Use conventional prefixes: `fix/`, `feat/`, `docs/`, `chore/`, `refactor/`, `hotfix/`.</parameter>
+<task_progress>- [x] Create GitHub issue #10 for CONTRIBUTING.md sync
+- [x] Update CONTRIBUTING.md Branching Strategy section
+- [x] Update CONTRIBUTING.md "Create a Branch" section
+- [ ] Update CONTRIBUTING.md "Open a Pull Request" section
+- [x] Add cross-reference to branching-strategy.md
+- [ ] Create PR to resolve issue #10</task_progress>
+</invoke>
 
 ### 3. Set Up Your Environment
 
@@ -66,9 +89,17 @@ chore: bump dependencies
 
 ### 7. Open a Pull Request
 
-- Target the `main` branch.
+- **Features:** Target the `develop` branch.
+- **Hotfixes:** Target the `main` branch.
 - Fill in the PR template.
-- Reference any related issues.
+- Reference any related issues.</parameter>
+<task_progress>- [x] Create GitHub issue #10 for CONTRIBUTING.md sync
+- [x] Update CONTRIBUTING.md Branching Strategy section
+- [x] Update CONTRIBUTING.md "Create a Branch" section
+- [x] Update CONTRIBUTING.md "Open a Pull Request" section
+- [x] Add cross-reference to branching-strategy.md
+- [ ] Create PR to resolve issue #10</task_progress>
+</invoke>
 
 ---
 
