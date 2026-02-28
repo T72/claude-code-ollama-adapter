@@ -103,6 +103,7 @@ Current files:
 | File | Description |
 |------|-------------|
 | `docs/operations/README.md` | Deployment and runtime requirements |
+| `docs/operations/deployment-targets.md` | Non-Docker deployment options |
 
 Rule:
 Operational docs must be reproducible and environment-specific.
