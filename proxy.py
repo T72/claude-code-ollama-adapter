@@ -27,8 +27,11 @@ _ANTHROPIC_DROP_PARAMS = {'output_config', 'thinking', 'metadata', 'anthropic_ve
 app = FastAPI(title='Claude Code Ollama Adapter', version='0.4.4')
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
-    if request_think is not None: return request_think
-    return model in THINK_MODELS
+    if request_think is False:
+        return False
+    if model not in THINK_MODELS:
+        return False
+    return True
 
 def _normalize_messages(messages: list) -> list:
     normalized = []
@@ -46,9 +49,9 @@ def _openai_to_ollama(body: dict) -> dict:
     messages = _normalize_messages(body.get('messages', []))
     stream = body.get('stream', False)
     
-    ollama_body = {'model': model, 'messages': messages, 'stream': stream, 'think': False}
-    
-    if _should_think(model, body.get('think')): 
+    ollama_body = {'model': model, 'messages': messages, 'stream': stream}
+
+    if _should_think(model, body.get('think')):
         ollama_body['think'] = True
     
     if 'tools' in body:
@@ -61,6 +64,24 @@ def _openai_to_ollama(body: dict) -> dict:
         options['num_predict'] = body['max_tokens']
     if options: ollama_body['options'] = options
     return ollama_body
+
+
+def _is_unsupported_thinking_response(resp: httpx.Response) -> bool:
+    if resp.status_code < 400:
+        return False
+    return 'does not support thinking' in (resp.text or '').lower()
+
+
+async def _post_with_think_fallback(
+    client: httpx.AsyncClient,
+    url: str,
+    ollama_body: dict,
+) -> httpx.Response:
+    resp = await client.post(url, json=ollama_body)
+    if ollama_body.get('think') and _is_unsupported_thinking_response(resp):
+        retry_body = {k: v for k, v in ollama_body.items() if k != 'think'}
+        return await client.post(url, json=retry_body)
+    return resp
 
 def _anthropic_to_ollama(body: dict) -> dict:
     model = body.get('model', '')
@@ -240,7 +261,7 @@ async def chat_completions(request: Request):
         return StreamingResponse(_stream_openai(url, ollama_body, model), media_type='text/event-stream')
 
     async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(url, json=ollama_body)
+        resp = await _post_with_think_fallback(client, url, ollama_body)
         resp.raise_for_status()
         return JSONResponse(_ollama_to_openai(resp.json(), model))
 
