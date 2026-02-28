@@ -98,7 +98,11 @@ Contains:
 - Observability and monitoring setup
 - Incident response notes (if applicable)
 
-Current files: None.
+Current files:
+
+| File | Description |
+|------|-------------|
+| `docs/operations/README.md` | Deployment and runtime requirements |
 
 Rule:
 Operational docs must be reproducible and environment-specific.
