@@ -203,7 +203,7 @@ claude-direct --model qwen3:14b         # Uses adapter directly on port 4000
 | Environment variable | Default | Description |
 | --- | --- | --- |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `THINK_MODELS` | (empty) | Comma-separated model names that get `think: true` injected |
+| `THINK_MODELS` | (empty) | Comma-separated model names that get `think: true` injected. Models not in this set never forward `think` to Ollama. |
 
 ---
 
