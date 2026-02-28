@@ -228,6 +228,7 @@ litellm --config litellm_config.yaml --port 4001
 Use `litellm_config.secure.example.yaml` for production or shared environments requiring authentication.
 
 - **Virtual key authentication** - requires `master_key` + `DATABASE_URL`
+- **PostgreSQL is required** (secure mode does not run without a PostgreSQL database)
 - **Spend tracking & rate limiting** - built-in LiteLLM features
 - **Use case**: Production deployments, team environments
 

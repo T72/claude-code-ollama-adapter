@@ -16,8 +16,7 @@
 #    - Can be set via this config OR environment variable LITELLM_MASTER_KEY
 #
 # 2. Set DATABASE_URL (required when using master_key):
-#    - PostgreSQL: postgresql://user:password@localhost:5432/litellm
-#    - SQLite: sqlite:///./litellm.db
+#    - PostgreSQL (required): postgresql://user:password@localhost:5432/litellm
 #    - Set via environment variable DATABASE_URL
 #
 # 3. Start LiteLLM with your database:
