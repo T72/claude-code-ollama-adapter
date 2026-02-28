@@ -24,7 +24,8 @@ THINK_MODELS: set[str] = _DEFAULT_THINK_MODELS | {
 
 _ANTHROPIC_DROP_PARAMS = {'output_config', 'thinking', 'metadata', 'anthropic_version', 'betas'}
 
-app = FastAPI(title='Claude Code Ollama Adapter', version='0.4.4')
+VERSION = '0.4.4'
+app = FastAPI(title='Claude Code Ollama Adapter', version=VERSION)
 
 def _should_think(model: str, request_think: Optional[bool]) -> bool:
     if request_think is False:
